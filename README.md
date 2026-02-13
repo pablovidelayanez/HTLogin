@@ -451,7 +451,7 @@ python3 main.py -u https://example.com/login -o report.html -of html
 ```
 
 ## Example Output
-![Output.](https://github.com/akinerkisa/HTLogin/blob/main/output.png)
+[<img src="https://i.ytimg.com/vi/49Z-QxYei7Y/hqdefault.jpg" width="50%">](https://www.youtube.com/watch?v=49Z-QxYei7Y)
 
 ## Testing
 
