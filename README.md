@@ -1,4 +1,4 @@
-# HowToLogin (HTLogin) v1.0.0
+# HowToLogin (HTLogin) v1.0.1
 HowToLogin is a tool that tests web application login pages for login bypass. HTLogin tests for various login bypass payloads, common default credentials and rate limits on the login forms in the given url and presents it to the user.
 
 ## Quick Start And Usage
@@ -31,7 +31,7 @@ python main.py -u https://example.com/login -p http://127.0.0.1:8080
 python main.py -u https://example.com/login --use-selenium
 
 # Use custom User-Agent
-python main.py -u https://example.com/login --user-agent "HTLogin/1.0.0"
+python main.py -u https://example.com/login --user-agent "HTLogin/1.0.1"
 
 ```
 
