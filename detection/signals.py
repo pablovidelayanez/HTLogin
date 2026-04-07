@@ -51,6 +51,8 @@ class SignalCollector:
         
         self._check_redirect()
         self._check_session_cookie()
+        self._check_final_url()
+        self._check_login_entry_page()
         self._check_success_keywords()
         self._check_content_length_change()
         self._check_response_format_change()
@@ -61,6 +63,63 @@ class SignalCollector:
         self._check_multiple_users()
         
         return self.signals
+
+    def _check_final_url(self) -> None:
+        if not self.response or not hasattr(self.response, 'url') or not self.response.url:
+            return
+
+        from urllib.parse import urlparse
+
+        final_url = self.response.url
+        original_path = urlparse(self.original_url).path.lower()
+        final_path = urlparse(final_url).path.lower()
+
+        if not final_path or final_path == original_path:
+            return
+
+        login_paths = ['/login', '/signin', '/sign-in', '/account/login']
+        if final_path in login_paths:
+            return
+
+        if any(token in final_path for token in ['login', 'signin', 'sign-in']):
+            return
+
+        self.signals.append(Signal(
+            signal_type=SignalType.POSITIVE,
+            name="final_url_changed",
+            value=final_url,
+            confidence=70,
+            description=f"Final URL changed to non-login page: {final_url}"
+        ))
+
+    def _check_login_entry_page(self) -> None:
+        if not self.response or not hasattr(self.response, 'text') or not self.response.text:
+            return
+
+        content_lower = self.response.text.lower()
+        url_lower = self.response.url.lower() if hasattr(self.response, 'url') and self.response.url else ""
+        from urllib.parse import urlparse
+        path_lower = urlparse(url_lower).path.lower() if url_lower else ""
+
+        login_routes = [
+            '/account/login',
+            'onloginclick',
+            'window.location.href = \'/account/login\'',
+            'window.location.href="/account/login"'
+        ]
+
+        has_login_route = any(route in content_lower for route in login_routes)
+        has_login_indicator = any(indicator.lower() in content_lower for indicator in self.login_indicators)
+        looks_like_portal_home = 'identification portal' in content_lower or 'welcome on' in content_lower
+
+        if path_lower in ['', '/'] and (has_login_route or (looks_like_portal_home and has_login_indicator)):
+            self.signals.append(Signal(
+                signal_type=SignalType.NEGATIVE,
+                name="login_entry_page",
+                value="detected",
+                confidence=40,
+                description="Response still looks like a login entry page or portal landing page"
+            ))
     
     def _check_redirect(self) -> None:
         if not self.response or not hasattr(self.response, 'status_code'):
@@ -123,7 +182,10 @@ class SignalCollector:
                             redirect_response = self.client.get(current_url, cookies=cookies, allow_redirects=False)
                         else:
                             import requests
-                            redirect_response = requests.get(current_url, cookies=cookies, timeout=5, allow_redirects=False)
+                            # Disable SSL verification to follow redirects on self-signed certs
+                            import urllib3
+                            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                            redirect_response = requests.get(current_url, cookies=cookies, timeout=5, allow_redirects=False, verify=False)
                         
                         if not redirect_response:
                             break
@@ -169,15 +231,43 @@ class SignalCollector:
                             
                             if final_url and is_not_login_page and not has_error_indicators and not has_failure_keywords:
                                 redirect_final_url = final_response.url if hasattr(final_response, 'url') else current_url
+                                # Higher confidence for redirect to homepage/dashboard
+                                redirect_path = urlparse(redirect_final_url).path if redirect_final_url else ""
+                                is_homepage = redirect_path in ['/home', '/dashboard', '/index', '/main', '/admin']
+                                confidence_score = 60 if is_homepage else 45
                                 self.signals.append(Signal(
                                     signal_type=SignalType.POSITIVE,
                                     name="302_redirect_to_non_login",
                                     value=redirect_final_url,
-                                    confidence=40,
+                                    confidence=confidence_score,
                                     description=f"302 redirect to non-login page (chain length: {redirect_count})"
                                 ))
                 except Exception:
                     pass
+                
+                # Fallback: If we couldn't follow the redirect chain, check the initial Location header
+                if not any(s.name == "302_redirect_to_non_login" for s in self.signals):
+                    from urllib.parse import urlparse
+                    redirect_path = urlparse(full_redirect_url).path if full_redirect_url else ""
+                    redirect_url_lower = full_redirect_url.lower() if full_redirect_url else ""
+                    
+                    # Check if redirect is NOT to login page
+                    is_not_login = not any(
+                        indicator.lower() in redirect_url_lower
+                        for indicator in self.login_indicators
+                    )
+                    
+                    # Check for homepage-like paths
+                    is_homepage = redirect_path in ['/home', '/dashboard', '/index', '/main', '/admin']
+                    
+                    if is_not_login and is_homepage:
+                        self.signals.append(Signal(
+                            signal_type=SignalType.POSITIVE,
+                            name="302_redirect_to_non_login",
+                            value=full_redirect_url,
+                            confidence=55,
+                            description=f"302 redirect to homepage ({redirect_path or '/'})"
+                        ))
     
     def _check_session_cookie(self) -> None:
         if not self.response or not hasattr(self.response, 'headers'):
@@ -287,13 +377,12 @@ class SignalCollector:
         
         lower_content = self.response.text.lower()
         url_lower = self.response.url.lower() if hasattr(self.response, 'url') and self.response.url else ""
-        original_url_lower = self.original_url.lower()
         
         success_found = any(kw.lower() in lower_content for kw in self.success_keywords)
         
         if success_found:
             is_still_on_login_page = any(
-                indicator.lower() in lower_content or indicator.lower() in url_lower or indicator.lower() in original_url_lower
+                indicator.lower() in lower_content or indicator.lower() in url_lower
                 for indicator in self.login_indicators
             )
             
@@ -333,8 +422,24 @@ class SignalCollector:
         if not self.response or not hasattr(self.response, 'text') or not self.response.text:
             return
         
+        from urllib.parse import urlparse
+
         lower_content = self.response.text.lower()
+        url_lower = self.response.url.lower() if hasattr(self.response, 'url') and self.response.url else ""
+        final_path = urlparse(url_lower).path.lower() if url_lower else ""
+        original_path = urlparse(self.original_url).path.lower()
+        is_non_login_final = final_path and final_path != original_path and not any(token in final_path for token in ['login', 'signin', 'sign-in'])
+
+        explicit_auth_failures = [
+            'invalid username or password', 'invalid credentials', 'bad credentials',
+            'login failed', 'authentication failed'
+        ]
+
         failure_found = any(kw.lower() in lower_content for kw in self.failure_keywords)
+        explicit_failure_found = any(term in lower_content for term in explicit_auth_failures)
+
+        if is_non_login_final and not explicit_failure_found:
+            return
         
         if failure_found:
             self.signals.append(Signal(
@@ -350,20 +455,44 @@ class SignalCollector:
             return
         
         if len(self.response.text) != self.original_content_length:
+            from urllib.parse import urlparse
+
             size_diff = abs(len(self.response.text) - self.original_content_length)
             if size_diff > 100:
                 response_lower = self.response.text.lower()
                 url_lower = self.response.url.lower() if hasattr(self.response, 'url') and self.response.url else ""
-                original_url_lower = self.original_url.lower()
+                final_path = urlparse(url_lower).path.lower() if url_lower else ""
+                original_path = urlparse(self.original_url).path.lower()
+                is_non_login_final = final_path and final_path != original_path and not any(token in final_path for token in ['login', 'signin', 'sign-in'])
                 
                 is_error_message = any(indicator.lower() in response_lower for indicator in self.error_indicators)
                 has_failure_keywords = any(kw.lower() in response_lower for kw in self.failure_keywords)
                 is_still_on_login_page = any(
-                    indicator.lower() in response_lower or indicator.lower() in url_lower or indicator.lower() in original_url_lower
+                    indicator.lower() in response_lower or indicator.lower() in url_lower
                     for indicator in self.login_indicators
                 )
+                has_login_route = '/account/login' in response_lower or 'onloginclick' in response_lower
+
+                if is_non_login_final:
+                    if len(self.response.text) < self.original_content_length * 0.5:
+                        self.signals.append(Signal(
+                            signal_type=SignalType.POSITIVE,
+                            name="content_significantly_shorter",
+                            value=size_diff,
+                            confidence=25,
+                            description=f"Content significantly shorter ({len(self.response.text)} vs {self.original_content_length} bytes) on non-login page"
+                        ))
+                    else:
+                        self.signals.append(Signal(
+                            signal_type=SignalType.POSITIVE,
+                            name="content_length_changed",
+                            value=size_diff,
+                            confidence=10,
+                            description=f"Content length changed by {size_diff} bytes on non-login page"
+                        ))
+                    return
                 
-                if is_error_message or has_failure_keywords or is_still_on_login_page:
+                if is_error_message or has_failure_keywords or is_still_on_login_page or has_login_route:
                     if len(self.response.text) < self.original_content_length * 0.5:
                         self.signals.append(Signal(
                             signal_type=SignalType.NEGATIVE,
@@ -463,10 +592,9 @@ class SignalCollector:
         
         content_lower = self.response.text.lower()
         url_lower = self.response.url.lower() if hasattr(self.response, 'url') and self.response.url else ""
-        original_url_lower = self.original_url.lower()
         
         login_indicators_found = any(
-            indicator.lower() in content_lower or indicator.lower() in url_lower or indicator.lower() in original_url_lower
+            indicator.lower() in content_lower or indicator.lower() in url_lower
             for indicator in self.login_indicators
         )
         
@@ -489,6 +617,9 @@ class SignalCollector:
         content_lower = self.response.text.lower()
         has_generic_message = any(indicator.lower() in content_lower for indicator in self.generic_indicators)
         has_specific_user = any(indicator.lower() in content_lower for indicator in self.specific_indicators)
+        has_login_route = '/account/login' in content_lower or 'onloginclick' in content_lower
+        if has_login_route:
+            return
         
         if has_generic_message and not has_specific_user:
             length_diff = abs(len(self.response.text) - self.original_content_length)

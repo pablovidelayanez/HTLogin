@@ -31,17 +31,21 @@ class FormParser:
     ]
     
     USERNAME_PATTERNS = [
-        {'type': 'text'},
+        # Priorité aux patterns par name/id qui sont plus spécifiques
+        {'name': re.compile(r'user|login|email|account|username', re.I)},
+        {'id': re.compile(r'user|login|email|account|username', re.I)},
         {'type': 'email'},
-        {'name': re.compile(r'user|login|email|account', re.I)},
-        {'id': re.compile(r'user|login|email|account', re.I)},
-        {'class': re.compile(r'user|login|email|account', re.I)},
+        {'type': 'text'},
+        {'class': re.compile(r'user|login|email|account|username', re.I)},
+        # Also check placeholder and data-* attributes
+        {'placeholder': re.compile(r'user|login|email|account|username', re.I)},
     ]
     
     PASSWORD_PATTERNS = [
         {'type': 'password'},
-        {'name': re.compile(r'pass|pwd', re.I)},
-        {'id': re.compile(r'pass|pwd', re.I)},
+        {'name': re.compile(r'pass|pwd|password', re.I)},
+        {'id': re.compile(r'pass|pwd|password', re.I)},
+        {'placeholder': re.compile(r'pass|pwd|password', re.I)},
     ]
     
     CAPTCHA_PATTERNS = [
@@ -62,20 +66,40 @@ class FormParser:
             logger.warning(f"Failed to parse HTML: {e}")
             return None
         
-        form = soup.find('form')
+        # Debug: Log HTML preview
+        html_preview = html[:500] if html else "(empty)"
+        logger.debug(f"[FORM] Parsing HTML (length={len(html) if html else 0})")
+        logger.debug(f"[FORM] HTML preview: {html_preview}...")
         
-        if not form:
-            logger.debug("No <form> tag found, trying heuristic detection")
-            result = self._parse_without_form_tag(soup, url)
-            if not result:
-                logger.debug("Trying to extract form fields from JavaScript (SPA detection)")
-                result = self._parse_from_javascript(soup, url)
-            if not result and use_selenium:
-                logger.info("Form not found in static HTML. Attempting to render page with Selenium...")
-                result = self._parse_with_selenium(url, selenium_wait_time, user_agent)
-            return result
+        # Find ALL forms and check each one for login fields
+        forms = soup.find_all('form')
         
-        return self._parse_form_tag(form, soup, url)
+        if forms:
+            logger.debug(f"[FORM] Found {len(forms)} <form> tag(s)")
+            
+            for idx, form in enumerate(forms):
+                action = form.get('action', '')
+                logger.debug(f"[FORM] Checking form {idx+1}: action={action}, method={form.get('method')}")
+                
+                # Try to parse this form
+                result = self._parse_form_tag(form, soup, url)
+                if result:
+                    logger.debug(f"[FORM] Login form found in form {idx+1} (action={action})")
+                    return result
+                else:
+                    logger.debug(f"[FORM] Form {idx+1} is not a login form")
+        else:
+            logger.debug("[FORM] No <form> tags found, trying heuristic detection")
+        
+        # If no form with login fields found, try heuristic detection
+        result = self._parse_without_form_tag(soup, url)
+        if not result:
+            logger.debug("Trying to extract form fields from JavaScript (SPA detection)")
+            result = self._parse_from_javascript(soup, url)
+        if not result and use_selenium:
+            logger.info("Form not found in static HTML. Attempting to render page with Selenium...")
+            result = self._parse_with_selenium(url, selenium_wait_time, user_agent)
+        return result
     
     def _parse_form_tag(self, form: BeautifulSoup, soup: BeautifulSoup, 
                        url: str) -> Optional[FormData]:
@@ -103,7 +127,11 @@ class FormParser:
                 action = url
         
         method = form.get('method', 'POST').upper()
-        other_inputs = form.find_all('input', {'type': ['hidden', 'checkbox', 'radio']})
+        other_inputs = form.find_all('input', {'type': ['hidden', 'checkbox', 'radio', 'submit']})
+        other_inputs.extend(
+            button for button in form.find_all('button')
+            if button.get('name') and (button.get('type', 'submit').lower() == 'submit')
+        )
         
         return FormData(
             form=form,
@@ -158,6 +186,8 @@ class FormParser:
                             soup: BeautifulSoup) -> Optional[BeautifulSoup]:
         search_area = form if form else soup
         
+        logger.debug(f"[FORM] Searching for username input in {'form' if form else 'full page'}")
+        
         for pattern in self.USERNAME_PATTERNS:
             if 'type' in pattern:
                 result = search_area.find('input', {'type': pattern['type']})
@@ -167,17 +197,23 @@ class FormParser:
                 result = search_area.find('input', {'id': pattern['id']})
             elif 'class' in pattern:
                 result = search_area.find('input', {'class': pattern['class']})
+            elif 'placeholder' in pattern:
+                result = search_area.find('input', {'placeholder': pattern['placeholder']})
             else:
                 continue
             
             if result:
+                logger.debug(f"[FORM] Found username input: name={result.get('name')}, id={result.get('id')}, type={result.get('type')}")
                 return result
         
+        logger.debug("[FORM] No username input found with patterns")
         return None
     
     def _find_password_input(self, form: Optional[BeautifulSoup],
                             soup: BeautifulSoup) -> Optional[BeautifulSoup]:
         search_area = form if form else soup
+        
+        logger.debug(f"[FORM] Searching for password input in {'form' if form else 'full page'}")
         
         for pattern in self.PASSWORD_PATTERNS:
             if 'type' in pattern:
@@ -186,11 +222,17 @@ class FormParser:
                 result = search_area.find('input', {'name': pattern['name']})
             elif 'id' in pattern:
                 result = search_area.find('input', {'id': pattern['id']})
+            elif 'placeholder' in pattern:
+                result = search_area.find('input', {'placeholder': pattern['placeholder']})
             else:
                 continue
             
             if result:
+                logger.debug(f"[FORM] Found password input: name={result.get('name')}, id={result.get('id')}, type={result.get('type')}")
                 return result
+        
+        logger.debug("[FORM] No password input found with patterns")
+        return None
         
         return None
     

@@ -88,6 +88,12 @@ class UsernameEnumerationTester:
                 csrf_value = form_data.csrf_input.get('value')
                 if csrf_name and csrf_value:
                     payload_data[csrf_name] = csrf_value
+
+            for other_input in form_data.other_inputs:
+                other_name = other_input.get('name')
+                other_value = other_input.get('value')
+                if other_name:
+                    payload_data[other_name] = '' if other_value is None else other_value
             
             try:
                 if http_method == "POST":

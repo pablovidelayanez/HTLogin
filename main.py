@@ -51,6 +51,10 @@ def parse_arguments() -> argparse.Namespace:
                        help="Selenium page load wait time in seconds (default: 5)")
     parser.add_argument("--user-agent", type=str, default=None,
                        help="Custom User-Agent string for HTTP requests")
+    parser.add_argument("-m", "--mode", choices=['quick', 'full'], default='quick',
+                       help="Scan mode: quick (stop at first success) or full (test all payloads)")
+    parser.add_argument("-k", "--insecure", action="store_true",
+                       help="Allow insecure SSL connections (skip certificate verification)")
     
     return parser.parse_args()
 
@@ -85,6 +89,8 @@ def create_cli_config(args: argparse.Namespace) -> dict:
         'use_selenium': args.use_selenium if hasattr(args, 'use_selenium') else False,
         'selenium_wait_time': args.selenium_wait_time if hasattr(args, 'selenium_wait_time') else 5,
         'user_agent': args.user_agent if hasattr(args, 'user_agent') else None,
+        'scan_mode': args.mode if hasattr(args, 'mode') else 'quick',
+        'verify_ssl': not args.insecure if hasattr(args, 'insecure') else True,
     }
 
 

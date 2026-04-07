@@ -14,11 +14,12 @@ except ImportError:
 
 
 class SessionManager:
-    def __init__(self, timeout: int = 10, proxy: Optional[str] = None, use_cloudscraper: bool = False, user_agent: Optional[str] = None):
+    def __init__(self, timeout: int = 10, proxy: Optional[str] = None, use_cloudscraper: bool = False, user_agent: Optional[str] = None, verify_ssl: bool = True):
         self.timeout = timeout
         self.proxy = proxy
         self.use_cloudscraper = use_cloudscraper and CLOUDSCRAPER_AVAILABLE
         self.user_agent = user_agent or 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        self.verify_ssl = verify_ssl
     
     def create_session(self, max_retries: int = 2) -> Session:
         if self.use_cloudscraper:

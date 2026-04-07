@@ -26,7 +26,18 @@ class APIDiscovery:
         '/user/login',
         '/users/login',
         '/account/login',
-        '/accounts/login'
+        '/accounts/login',
+        # Juice Shop and similar frameworks
+        '/rest/user/login',
+        '/rest/auth/login',
+        '/rest/login',
+        '/rest/authenticate',
+        # Additional common patterns
+        '/api/users/login',
+        '/api/user/authenticate',
+        '/api/sessions',
+        '/api/token',
+        '/oauth/token',
     ]
     
     GRAPHQL_PATHS = [
@@ -80,7 +91,7 @@ class APIDiscovery:
                     headers={'Content-Type': 'application/json'},
                     allow_redirects=False
                 )
-                if test_response:
+                if test_response is not None:
                     status = test_response.status_code if hasattr(test_response, 'status_code') else 0
 
                     if status not in [404, 405]:
@@ -94,7 +105,7 @@ class APIDiscovery:
                     headers={'Content-Type': 'application/json'},
                     allow_redirects=False
                 )
-                if test_response:
+                if test_response is not None:
                     status = test_response.status_code if hasattr(test_response, 'status_code') else 0
                     if status not in [404, 405]:
                         if hasattr(test_response, 'text') and test_response.text:

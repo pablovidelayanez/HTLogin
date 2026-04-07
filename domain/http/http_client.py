@@ -9,15 +9,21 @@ from domain.http.session_manager import SessionManager
 
 
 class HTTPClient:
-    def __init__(self, timeout: int = 10, max_retries: int = 2, proxy: Optional[str] = None, use_cloudscraper: bool = False, user_agent: Optional[str] = None):
+    def __init__(self, timeout: int = 10, max_retries: int = 2, proxy: Optional[str] = None, use_cloudscraper: bool = False, user_agent: Optional[str] = None, verify_ssl: bool = True):
         self.timeout = timeout
         self.max_retries = max_retries
         self.use_cloudscraper = use_cloudscraper
+        self.verify_ssl = verify_ssl
         
-        self.session_manager = SessionManager(timeout=timeout, proxy=proxy, use_cloudscraper=use_cloudscraper, user_agent=user_agent)
+        # Disable SSL warnings if verification is disabled
+        if not verify_ssl:
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        
+        self.session_manager = SessionManager(timeout=timeout, proxy=proxy, use_cloudscraper=use_cloudscraper, user_agent=user_agent, verify_ssl=verify_ssl)
         self.retry_policy = RetryPolicy(max_retries=max_retries)
         self.session = self.session_manager.create_session(max_retries=max_retries)
-        self.request_sender = RequestSender(self.session, self.retry_policy)
+        self.request_sender = RequestSender(self.session, self.retry_policy, verify_ssl=verify_ssl)
         self.response_evaluator = ResponseEvaluator()
         self._cloudscraper_session = None
     

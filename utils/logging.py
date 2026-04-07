@@ -52,7 +52,7 @@ def setup_logging(log_file: Optional[str] = None, verbose: bool = False) -> logg
     logger.handlers = []
     
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
+    console_handler.setLevel(logging.DEBUG if verbose else logging.INFO)
     console_format = ColoredFormatter('%(levelname)s: %(message)s')
     console_handler.setFormatter(console_format)
     logger.addHandler(console_handler)

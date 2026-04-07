@@ -35,6 +35,8 @@ class Config:
     selenium_headless: bool = True
     selenium_wait_time: int = 5
     user_agent: Optional[str] = None
+    scan_mode: str = 'quick'  # 'quick' or 'full'
+    verify_ssl: bool = True  # SSL certificate verification
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Config':
@@ -48,8 +50,8 @@ class Config:
                   'selenium_wait_time'],
             float: ['rate_limit_adaptive_delay'],
             bool: ['show_progress', 'verbose', 'discovery_enabled', 'discovery_verify_pages', 
-                   'nosql_progressive_mode', 'use_selenium', 'selenium_headless'],
-            str: ['http_method', 'language', 'output_format'],
+                   'nosql_progressive_mode', 'use_selenium', 'selenium_headless', 'verify_ssl'],
+            str: ['http_method', 'language', 'output_format', 'scan_mode'],
             list: ['nosql_admin_patterns'],
         }
         

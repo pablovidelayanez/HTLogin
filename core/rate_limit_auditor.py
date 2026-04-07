@@ -51,12 +51,14 @@ class RateLimitAuditor:
         concurrency: int = 10,
         timeout: int = 10,
         session: Optional[requests.Session] = None,
+        verify_ssl: bool = True,
     ) -> None:
         """
         :param max_requests: Total number of requests to send (default: 50)
         :param concurrency: Maximum number of concurrent workers (default: 10)
         :param timeout: Per-request timeout in seconds (default: 10)
         :param session: Optional pre-configured requests.Session (proxy, headers, etc.)
+        :param verify_ssl: Whether to verify SSL certificates (default: True)
         """
         if max_requests <= 0:
             raise ValueError("max_requests must be > 0")
@@ -67,6 +69,7 @@ class RateLimitAuditor:
         self.concurrency = min(concurrency, max_requests)
         self.timeout = timeout
         self.session = session or self._create_session()
+        self.verify_ssl = verify_ssl
 
     def _create_session(self) -> requests.Session:
         """
@@ -142,11 +145,13 @@ class RateLimitAuditor:
             try:
                 if method == "POST":
                     resp = self.session.post(
-                        url, data=payload or {}, timeout=self.timeout, allow_redirects=False
+                        url, data=payload or {}, timeout=self.timeout, allow_redirects=False,
+                        verify=self.verify_ssl
                     )
                 else:
                     resp = self.session.get(
-                        url, params=payload or {}, timeout=self.timeout, allow_redirects=False
+                        url, params=payload or {}, timeout=self.timeout, allow_redirects=False,
+                        verify=self.verify_ssl
                     )
 
                 with lock:
