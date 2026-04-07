@@ -11,7 +11,7 @@ class CustomCredentialProvider(CredentialProvider):
         credentials = self._load_from_file(filepath)
         super().__init__(credentials)
         logger.info(f"Loaded {len(credentials)} custom credentials from {filepath}")
-    
+
     def _load_from_file(self, filepath: str) -> List[str]:
         try:
             with open(filepath, 'r', encoding='utf-8') as f:

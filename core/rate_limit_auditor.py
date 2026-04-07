@@ -12,13 +12,6 @@ logger = get_logger()
 
 
 class RateLimitAuditor:
-    """
-    Actively tests a login endpoint for missing or weak rate limiting.
-
-    This class is intentionally focused on *rate limiting behaviour*, not on
-    credential correctness. It assumes dummy credentials are used and only
-    evaluates how the infrastructure reacts to volume and concurrency.
-    """
 
     RATE_LIMIT_TEXT_INDICATORS = [
         "too many requests",
@@ -53,13 +46,6 @@ class RateLimitAuditor:
         session: Optional[requests.Session] = None,
         verify_ssl: bool = True,
     ) -> None:
-        """
-        :param max_requests: Total number of requests to send (default: 50)
-        :param concurrency: Maximum number of concurrent workers (default: 10)
-        :param timeout: Per-request timeout in seconds (default: 10)
-        :param session: Optional pre-configured requests.Session (proxy, headers, etc.)
-        :param verify_ssl: Whether to verify SSL certificates (default: True)
-        """
         if max_requests <= 0:
             raise ValueError("max_requests must be > 0")
         if concurrency <= 0:
@@ -72,12 +58,6 @@ class RateLimitAuditor:
         self.verify_ssl = verify_ssl
 
     def _create_session(self) -> requests.Session:
-        """
-        Create a simple session with no automatic retries.
-
-        We *do not* want the HTTP layer to retry 429 / 5xx, because those
-        are exactly the signals we're trying to detect.
-        """
         from requests.adapters import HTTPAdapter
 
         try:
@@ -100,14 +80,6 @@ class RateLimitAuditor:
         method: str = "POST",
         payload: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """
-        Run the rate limit audit against a specific login URL.
-
-        :param url: Login endpoint URL to test
-        :param method: HTTP method ("GET" or "POST"), default: "POST"
-        :param payload: Optional dict payload (dummy username/password, etc.)
-        :return: Structured result describing vulnerability and observations
-        """
         method = method.upper()
         if method not in ("GET", "POST"):
             raise ValueError("method must be 'GET' or 'POST'")
@@ -132,11 +104,6 @@ class RateLimitAuditor:
                     detected_headers[name] = headers.get(name)
 
         def _worker(seq: int) -> Tuple[int, Optional[int]]:
-            """
-            Single request worker.
-
-            Returns (seq, status_code or None if failed).
-            """
             nonlocal first_block_request, total_sent, exception_count
 
             if stop_event.is_set():
@@ -205,26 +172,26 @@ class RateLimitAuditor:
         any_rate_limit_header = bool(detected_headers)
         any_hard_block = first_block_request is not None
         any_rate_limit_code = any(code in (429, 403) for code in status_codes)
-        
+
         if first_block_request is None and any_rate_limit_code:
             for idx, code in enumerate(status_codes):
                 if code in (429, 403):
                     first_block_request = idx + 1
                     break
-        
+
         exception_ratio = (exception_count / total_sent) if total_sent else 0.0
         exception_storm = exception_ratio >= 0.5 and total_sent >= 10
-        
+
         captcha_triggered = captcha_hits > 0
-        
+
         is_vulnerable: bool
         confidence: str
-        
+
         protection_seen = any_rate_limit_code or any_rate_limit_header or exception_storm or captcha_triggered
-        
+
         if protection_seen:
             is_vulnerable = False
-            
+
             if any_rate_limit_code or any_rate_limit_header:
                 confidence = "High"
             elif captcha_triggered:
@@ -260,10 +227,10 @@ class RateLimitAuditor:
 
 
 if __name__ == "__main__":
-    # Simple usage example (manual run)
+
     auditor = RateLimitAuditor(max_requests=50, concurrency=10, timeout=10)
 
-    # Dummy credentials – we only care about infrastructure behaviour
+
     dummy_payload = {"username": "dummy_user", "password": "dummy_pass"}
 
     target_url = "http://127.0.0.1:5000/lp/rate-limit-login"

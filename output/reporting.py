@@ -10,18 +10,18 @@ from detection.success import DetectionResult, ConfidenceLevel
 class ReportGenerator:
     def __init__(self):
         pass
-    
+
     def generate_json(self, results_list: List[ScanResult]) -> Dict[str, Any]:
         report = {
             "metadata": {
                 "tool": "HTLogin",
-                "version": "1.0.1",
+                "version": "1.1.1",
                 "generated_at": datetime.now().isoformat(),
                 "total_targets": len(results_list)
             },
             "targets": []
         }
-        
+
         for result in results_list:
             result_dict = result.to_dict() if isinstance(result, ScanResult) else result
             target_report = {
@@ -34,7 +34,7 @@ class ReportGenerator:
                 "vulnerabilities": [],
                 "tests": {}
             }
-            
+
             for test_name, test_result in result_dict.get("tests", {}).items():
                 test_report = {
                     "test_type": test_name,
@@ -44,7 +44,7 @@ class ReportGenerator:
                     "manual_verification_recommended": test_result.get("manual_verification_recommended", False),
                     "details": test_result.get("details", {})
                 }
-                
+
                 if test_result.get("status") == "Successful":
                     vulnerability = {
                         "type": test_name,
@@ -56,28 +56,28 @@ class ReportGenerator:
                         "manual_verification_recommended": test_result.get("manual_verification_recommended", False)
                     }
                     target_report["vulnerabilities"].append(vulnerability)
-                
+
                 target_report["tests"][test_name] = test_report
-            
+
             report["targets"].append(target_report)
-        
+
         return report
-    
+
     def generate_html(self, results_list: List[ScanResult]) -> str:
         html_content = self._get_html_template()
-        
+
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         html_content = html_content.replace("{timestamp}", timestamp)
-        
+
         content = ""
         for result in results_list:
             result_dict = result.to_dict() if isinstance(result, ScanResult) else result
             content += self._generate_target_html(result_dict)
-        
+
         html_content = html_content.replace("{content}", content)
-        
+
         return html_content
-    
+
     def _generate_target_html(self, result: Dict[str, Any]) -> str:
         if "error" in result:
             error_msg = html_module.escape(str(result.get('error', '')))
@@ -88,7 +88,7 @@ class ReportGenerator:
             <div class="test-details">{error_msg}</div>
         </div>
 """
-        
+
         url_escaped = html_module.escape(str(result.get('url', 'Unknown')))
         html_content = f"""
         <h2>Target: {url_escaped}</h2>
@@ -99,36 +99,36 @@ class ReportGenerator:
             <div class="summary-item"><strong>Duration:</strong> {result.get('duration_seconds', 0):.2f} seconds</div>
         </div>
 """
-        
+
         for test_name, test_result in result.get("tests", {}).items():
             html_content += self._generate_test_html(test_name, test_result)
-        
+
         return html_content
-    
+
     def _generate_test_html(self, test_name: str, test_result: Dict[str, Any]) -> str:
         status = test_result.get("status", "Unknown")
         css_class = 'success' if status == 'Successful' else 'failed' if status == 'Failed' else 'rate-limited'
-        
+
         html_content = f"""
         <div class="test-result {css_class}">
             <div class="test-name">
                 {test_name}: {status}
 """
-        
+
         if 'confidence_level' in test_result:
             conf_level = test_result['confidence_level'].lower()
             conf_class = self._get_confidence_class(conf_level)
             conf_score = test_result.get('confidence_score', 0)
             html_content += f'<span class="confidence {conf_class}">Confidence: {conf_level.title()} ({conf_score})</span>'
-            
+
             if test_result.get('manual_verification_recommended'):
                 html_content += '<span class="manual-verify">⚠ Manual Verification Recommended</span>'
-        
+
         html_content += """
             </div>
             <div class="test-details">
 """
-        
+
         if 'payload' in test_result and test_result['payload']:
             payload_escaped = html_module.escape(str(test_result["payload"]))
             html_content += f'<div><strong>Payload:</strong> <code>{payload_escaped}</code></div>'
@@ -137,22 +137,22 @@ class ReportGenerator:
             html_content += f'<div><strong>Credential:</strong> <code>{credential_escaped}</code></div>'
         if 'total_duration' in test_result:
             html_content += f'<div><strong>Test Duration:</strong> {test_result["total_duration"]:.2f} seconds</div>'
-        
+
         indicators = test_result.get('details', {}).get('indicators', [])
         if indicators:
             indicators_escaped = [html_module.escape(str(ind)) for ind in indicators]
             html_content += f'<div><strong>Indicators:</strong> {", ".join(indicators_escaped)}</div>'
-        
+
         if test_result.get('limitations'):
             limitations_escaped = html_module.escape(str(test_result["limitations"]))
             html_content += f'<div class="limitations"><strong>Limitations:</strong> {limitations_escaped}</div>'
-        
+
         html_content += """
             </div>
         </div>
 """
         return html_content
-    
+
     def _get_confidence_class(self, level: str) -> str:
         level_lower = level.lower()
         if level_lower == 'high':
@@ -161,7 +161,7 @@ class ReportGenerator:
             return 'confidence-medium'
         else:
             return 'confidence-low'
-    
+
     def _determine_severity(self, confidence_level: str) -> str:
         level_lower = confidence_level.lower()
         if level_lower == 'high':
@@ -170,7 +170,7 @@ class ReportGenerator:
             return 'Medium'
         else:
             return 'Low'
-    
+
     def _get_html_template(self) -> str:
         return """<!DOCTYPE html>
 <html lang="en">

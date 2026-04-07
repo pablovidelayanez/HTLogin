@@ -35,30 +35,29 @@ class Config:
     selenium_headless: bool = True
     selenium_wait_time: int = 5
     user_agent: Optional[str] = None
-    scan_mode: str = 'quick'  # 'quick' or 'full'
-    verify_ssl: bool = True  # SSL certificate verification
-    
+    scan_mode: str = 'quick'
+    verify_ssl: bool = True
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Config':
-        """Create Config from dictionary with type validation"""
         valid_fields = {}
-        optional_str_fields = ['output_file', 'log_file', 'proxy', 'credential_list_file', 
+        optional_str_fields = ['output_file', 'log_file', 'proxy', 'credential_list_file',
                               'test_account_username', 'test_account_password', 'user_agent']
         type_validators = {
-            int: ['timeout', 'max_retries', 'rate_limit_requests', 'rate_limit_threads', 
+            int: ['timeout', 'max_retries', 'rate_limit_requests', 'rate_limit_threads',
                   'confidence_threshold_low', 'confidence_threshold_medium', 'confidence_threshold_high',
                   'selenium_wait_time'],
             float: ['rate_limit_adaptive_delay'],
-            bool: ['show_progress', 'verbose', 'discovery_enabled', 'discovery_verify_pages', 
+            bool: ['show_progress', 'verbose', 'discovery_enabled', 'discovery_verify_pages',
                    'nosql_progressive_mode', 'use_selenium', 'selenium_headless', 'verify_ssl'],
             str: ['http_method', 'language', 'output_format', 'scan_mode'],
             list: ['nosql_admin_patterns'],
         }
-        
+
         for key, value in data.items():
             if not hasattr(cls, key):
                 continue
-            
+
             if key in optional_str_fields:
                 if value is None or isinstance(value, str):
                     valid_fields[key] = value
@@ -70,13 +69,13 @@ class Config:
                         logger = get_logger()
                         logger.warning(f"Skipping invalid config value for {key}: expected str or None, got {type(value).__name__}. Using default value.")
                 continue
-            
+
             expected_type = None
             for type_class, fields in type_validators.items():
                 if key in fields:
                     expected_type = type_class
                     break
-            
+
             if expected_type and not isinstance(value, expected_type):
                 try:
                     if expected_type == int and isinstance(value, (str, float)):
@@ -97,11 +96,11 @@ class Config:
                     logger = get_logger()
                     logger.warning(f"Skipping invalid config value for {key}: {e}. Using default value.")
                     continue
-            
+
             valid_fields[key] = value
-        
+
         return cls(**valid_fields)
-    
+
     @classmethod
     def from_file(cls, filepath: str) -> 'Config':
         try:
@@ -114,14 +113,14 @@ class Config:
             raise ValueError(f"Invalid JSON in config file {filepath}: {e}")
         except Exception as e:
             raise IOError(f"Error reading config file {filepath}: {e}")
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
-    
+
     def save_to_file(self, filepath: str) -> None:
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(self.to_dict(), f, indent=2, ensure_ascii=False)
-    
+
     def merge_cli_args(self, args: Dict[str, Any]) -> 'Config':
         config_dict = self.to_dict()
         for key, value in args.items():
@@ -130,13 +129,10 @@ class Config:
         return self.from_dict(config_dict)
 
 
-def get_config(cli_args: Optional[Dict[str, Any]] = None, 
+def get_config(cli_args: Optional[Dict[str, Any]] = None,
                config_file: Optional[str] = None) -> Config:
-    """
-    Get configuration with proper precedence: CLI args > Config file > Defaults
-    """
     config = Config.from_dict(DEFAULT_CONFIG)
-    
+
     if config_file and os.path.exists(config_file):
         try:
             file_config = Config.from_file(config_file)
@@ -150,9 +146,9 @@ def get_config(cli_args: Optional[Dict[str, Any]] = None,
             from utils.logging import get_logger
             logger = get_logger()
             logger.warning(f"Error loading config file {config_file}: {e}. Using defaults.")
-    
+
     if cli_args:
         config = config.merge_cli_args(cli_args)
-    
+
     return config
 

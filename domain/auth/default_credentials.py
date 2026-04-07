@@ -19,7 +19,7 @@ class DefaultCredentialProvider(CredentialProvider):
         "administrator:",
         "administrator:12345"
     ]
-    
+
     def __init__(self):
         super().__init__(self.DEFAULT_CREDENTIALS)
 

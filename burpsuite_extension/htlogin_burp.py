@@ -12,7 +12,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         self._helpers = callbacks.getHelpers()
         callbacks.setExtensionName("HTLogin Scanner Pro")
 
-        # --- FULL ORIGINAL PAYLOADS ---
+
         self.PAYLOADS = {
             "SQL Injection": [
                 "' OR '1'='1", "admin' --", "admin' #", "admin'/*",
@@ -54,10 +54,10 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         self.status_label = JLabel("Ready")
         self.status_label.setForeground(Color(0, 102, 204))
         top_panel.add(self.status_label)
-        
+
         btn_clear = JButton("Clear Logs", actionPerformed=self.clear_logs)
         top_panel.add(btn_clear)
-        
+
         self.log_area = JTextArea(25, 80)
         self.log_area.setFont(Font("Monospaced", Font.PLAIN, 12))
         self.log_area.setEditable(False)
@@ -91,18 +91,18 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
     def run_logic(self, messageInfo):
         request_info = self._helpers.analyzeRequest(messageInfo)
         params = request_info.getParameters()
-        
+
         self.log("\n" + "="*70)
         self.log("[*] TARGET: " + str(request_info.getUrl()))
         self.log("[*] Parameters found: " + str(len(params)))
         self.log("="*70)
 
-        # 1. Injection Testing
+
         for category, payloads in self.PAYLOADS.items():
             self.log("\n[>] Category: " + category)
             for payload in payloads:
                 for param in params:
-                    # Types: 0=URL, 1=Body, 6=JSON
+
                     if param.getType() in [0, 1, 6]:
                         new_req = self.create_patched_request(messageInfo, param, payload)
                         if new_req:
@@ -113,19 +113,19 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
                                 self.log("      Param: " + param.getName())
                                 self.log("      Payload: " + payload)
 
-        # 2. Default Credentials Testing
+
         self.log("\n[>] Testing Default Credentials...")
         user_p = self.find_p(params, ["user", "username", "email", "login"])
         pass_p = self.find_p(params, ["pass", "password", "pwd"])
-        
+
         if user_p and pass_p:
             for cred in self.DEFAULT_CREDS:
                 u, p = cred.split(":", 1)
-                # First patch username
+
                 temp_req = self.create_patched_request(messageInfo, user_p, u)
-                # Then patch password on the result
+
                 final_req = self.create_patched_request_from_bytes(temp_req, pass_p, p)
-                
+
                 resp = self._callbacks.makeHttpRequest(messageInfo.getHttpService(), final_req)
                 self._callbacks.addToSiteMap(resp)
                 if self.is_success(resp):
@@ -138,21 +138,20 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         return self.create_patched_request_from_bytes(messageInfo.getRequest(), param, value)
 
     def create_patched_request_from_bytes(self, request_bytes, param, value):
-        """Handles both standard and JSON parameter updates safely"""
         try:
-            if param.getType() == 6: # JSON
+            if param.getType() == 6:
                 req_str = self._helpers.bytesToString(request_bytes)
                 request_info = self._helpers.analyzeRequest(request_bytes)
                 offset = request_info.getBodyOffset()
                 headers = req_str[:offset]
                 body = req_str[offset:]
-                
-                # Regex to replace JSON value: "param":"value"
+
+
                 pattern = r'("' + re.escape(param.getName()) + r'"\s*:\s*")([^"]*)(")'
                 escaped_value = value.replace('\\', '\\\\').replace('"', '\\"')
                 new_body = re.sub(pattern, r'\1' + escaped_value + r'\3', body)
                 return self._helpers.stringToBytes(headers + new_body)
-            else: # Standard URL/Body
+            else:
                 new_param = self._helpers.buildParameter(param.getName(), value, param.getType())
                 return self._helpers.updateParameter(request_bytes, new_param)
         except Exception as e:

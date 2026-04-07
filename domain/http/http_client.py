@@ -14,21 +14,20 @@ class HTTPClient:
         self.max_retries = max_retries
         self.use_cloudscraper = use_cloudscraper
         self.verify_ssl = verify_ssl
-        
-        # Disable SSL warnings if verification is disabled
+
+
         if not verify_ssl:
             import urllib3
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        
+
         self.session_manager = SessionManager(timeout=timeout, proxy=proxy, use_cloudscraper=use_cloudscraper, user_agent=user_agent, verify_ssl=verify_ssl)
         self.retry_policy = RetryPolicy(max_retries=max_retries)
         self.session = self.session_manager.create_session(max_retries=max_retries)
         self.request_sender = RequestSender(self.session, self.retry_policy, verify_ssl=verify_ssl)
         self.response_evaluator = ResponseEvaluator()
         self._cloudscraper_session = None
-    
+
     def _switch_to_cloudscraper(self):
-        """Switch to cloudscraper session if Cloudflare is detected"""
         if self._cloudscraper_session is None:
             try:
                 import cloudscraper
@@ -40,10 +39,10 @@ class HTTPClient:
                     }
                 )
                 scraper.timeout = self.timeout
-                
+
                 if self.session_manager.proxy:
                     scraper.proxies = {"http": self.session_manager.proxy, "https": self.session_manager.proxy}
-                
+
                 browser_headers = {
                     'User-Agent': self.session_manager.user_agent,
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -53,7 +52,7 @@ class HTTPClient:
                     'Upgrade-Insecure-Requests': '1',
                 }
                 scraper.headers.update(browser_headers)
-                
+
                 self._cloudscraper_session = scraper
                 self.request_sender = RequestSender(self._cloudscraper_session, self.retry_policy)
                 self.session = self._cloudscraper_session
@@ -65,13 +64,13 @@ class HTTPClient:
                 self._cloudscraper_session = False
                 return False
         return self._cloudscraper_session is not False
-    
+
     def request(self, method: str, url: str, **kwargs) -> Optional[Response]:
         return self.request_sender.send_request(method, url, timeout=self.timeout, **kwargs)
-    
+
     def get(self, url: str, **kwargs) -> Optional[Response]:
         return self.request_sender.get(url, **kwargs)
-    
+
     def post(self, url: str, **kwargs) -> Optional[Response]:
         return self.request_sender.post(url, **kwargs)
 

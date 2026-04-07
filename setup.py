@@ -9,7 +9,7 @@ if os.path.exists(readme_path):
 
 setup(
     name='htlogin',
-    version='1.0.1',
+    version='1.1.1',
     description='Login Security Testing Tool - Tests web application login pages for bypass vulnerabilities',
     long_description=long_description,
     long_description_content_type='text/markdown',
