@@ -13,31 +13,30 @@ class RequestSender:
         self.session = session
         self.retry_policy = retry_policy
         self.verify_ssl = verify_ssl
-    
+
     def _ensure_decompressed(self, response: Response) -> Response:
-        """Ensure response content is decompressed, manually if needed."""
         if not response or not hasattr(response, 'text'):
             return response
-        
+
         try:
             text = response.text
             if not text:
                 return response
-            
-            # Check if content looks like binary garbage (not properly decoded)
+
+
             printable_ratio = sum(1 for c in text[:500] if c.isprintable() or c in '\n\r\t') / min(len(text), 500)
-            
+
             if printable_ratio >= 0.7:
-                return response  # Content is readable
-            
+                return response
+
             content_encoding = response.headers.get('Content-Encoding', '').lower()
-            
-            # Try manual Brotli decompression
+
+
             if 'br' in content_encoding:
                 try:
                     import brotli
                     decompressed = brotli.decompress(response.content)
-                    # Patch the response object
+
                     response._content = decompressed
                     response.encoding = 'utf-8'
                     logger.debug(f"Manually decompressed Brotli response")
@@ -45,8 +44,8 @@ class RequestSender:
                     logger.warning("Brotli compression detected but 'brotli' package not installed. Install with: pip install brotli")
                 except Exception as e:
                     logger.debug(f"Failed to manually decompress Brotli: {e}")
-            
-            # Try manual Gzip decompression
+
+
             elif 'gzip' in content_encoding:
                 try:
                     import gzip
@@ -56,8 +55,8 @@ class RequestSender:
                     logger.debug(f"Manually decompressed Gzip response")
                 except Exception as e:
                     logger.debug(f"Failed to manually decompress Gzip: {e}")
-            
-            # Try manual Deflate decompression
+
+
             elif 'deflate' in content_encoding:
                 try:
                     import zlib
@@ -67,15 +66,15 @@ class RequestSender:
                     logger.debug(f"Manually decompressed Deflate response")
                 except Exception as e:
                     logger.debug(f"Failed to manually decompress Deflate: {e}")
-                    
+
         except Exception as e:
             logger.debug(f"Error checking response compression: {e}")
-        
+
         return response
-    
-    def send_request(self, 
-                    method: str, 
-                    url: str, 
+
+    def send_request(self,
+                    method: str,
+                    url: str,
                     timeout: Optional[int] = None,
                     **kwargs) -> Optional[Response]:
         def make_request() -> Response:
@@ -87,7 +86,7 @@ class RequestSender:
                 **kwargs
             )
             return response
-        
+
         try:
             response = self.retry_policy.execute_with_retry(make_request)
             if response and response.status_code == 403:
@@ -124,10 +123,10 @@ class RequestSender:
         except Exception as e:
             logger.error(f"Unexpected error for {url}: {e}")
             return None
-    
+
     def get(self, url: str, **kwargs) -> Optional[Response]:
         return self.send_request('GET', url, **kwargs)
-    
+
     def post(self, url: str, **kwargs) -> Optional[Response]:
         return self.send_request('POST', url, **kwargs)
 

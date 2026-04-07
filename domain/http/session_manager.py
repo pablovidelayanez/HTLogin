@@ -20,12 +20,12 @@ class SessionManager:
         self.use_cloudscraper = use_cloudscraper and CLOUDSCRAPER_AVAILABLE
         self.user_agent = user_agent or 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         self.verify_ssl = verify_ssl
-    
+
     def create_session(self, max_retries: int = 2) -> Session:
         if self.use_cloudscraper:
             return self._create_cloudscraper_session(max_retries)
         return self._create_requests_session(max_retries)
-    
+
     def _create_cloudscraper_session(self, max_retries: int = 2) -> Session:
         scraper = cloudscraper.create_scraper(
             browser={
@@ -35,16 +35,16 @@ class SessionManager:
             }
         )
         scraper.timeout = self.timeout
-        
+
         if self.proxy:
             scraper.proxies = {"http": self.proxy, "https": self.proxy}
-        
+
         return scraper
-    
+
     def _create_requests_session(self, max_retries: int = 2) -> Session:
         session = Session()
         session.timeout = self.timeout
-        
+
         session.headers.update({
             'User-Agent': self.user_agent,
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -53,20 +53,20 @@ class SessionManager:
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1',
         })
-        
+
         retry_strategy = Retry(
             total=max_retries,
             backoff_factor=1,
-            status_forcelist=[502, 503, 504],  # Removed 429 - don't retry on rate limit
+            status_forcelist=[502, 503, 504],
             allowed_methods=["HEAD", "GET", "POST", "PUT", "DELETE", "OPTIONS", "TRACE"]
         )
-        
+
         adapter = HTTPAdapter(max_retries=retry_strategy)
         session.mount("http://", adapter)
         session.mount("https://", adapter)
-        
+
         if self.proxy:
             session.proxies = {"http": self.proxy, "https": self.proxy}
-        
+
         return session
 

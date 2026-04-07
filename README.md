@@ -1,4 +1,4 @@
-# HowToLogin (HTLogin) v1.0.1
+# HowToLogin (HTLogin) v1.1.1
 HowToLogin is a tool that tests web application login pages for login bypass. HTLogin tests for various login bypass payloads, common default credentials and rate limits on the login forms in the given url and presents it to the user.
 
 ## Quick Start And Usage
@@ -31,7 +31,7 @@ python main.py -u https://example.com/login -p http://127.0.0.1:8080
 python main.py -u https://example.com/login --use-selenium
 
 # Use custom User-Agent
-python main.py -u https://example.com/login --user-agent "HTLogin/1.0.1"
+python main.py -u https://example.com/login --user-agent "HTLogin/1.1.1"
 
 ```
 
@@ -92,7 +92,7 @@ Flag | Short | Description | Example | Default | Required
 --config | | Path to configuration file (JSON) | python3 main.py --config config.json | N/A | No |
 --use-selenium | | Use Selenium to render JavaScript (for SPA applications) | python3 main.py --use-selenium | false | No |
 --selenium-wait-time | | Selenium page load wait time in seconds | python3 main.py --selenium-wait-time 10 | 5 | No |
---user-agent | | Custom User-Agent string for HTTP requests | python3 main.py --user-agent "HTLogin/1.0.0" | Default browser UA | No |
+--user-agent | | Custom User-Agent string for HTTP requests | python3 main.py --user-agent "HTLogin/1.1.1" | Default browser UA | No |
 
 ## List File Example Format
 ```

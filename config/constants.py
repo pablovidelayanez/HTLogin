@@ -3,11 +3,11 @@ import os
 from typing import Dict, Any
 
 BANNER = """
-    ██   ██ ████████ ██       ██████   ██████  ██ ███    ██ 
-    ██   ██    ██    ██      ██    ██ ██       ██ ████   ██ 
-    ███████    ██    ██      ██    ██ ██   ███ ██ ██ ██  ██ 
-    ██   ██    ██    ██      ██    ██ ██    ██ ██ ██  ██ ██ 
-    ██   ██    ██    ███████  ██████   ██████  ██ ██   ████   v1.0.1 github.com/akinerkisa/HTLogin
+    ██   ██ ████████ ██       ██████   ██████  ██ ███    ██
+    ██   ██    ██    ██      ██    ██ ██       ██ ████   ██
+    ███████    ██    ██      ██    ██ ██   ███ ██ ██ ██  ██
+    ██   ██    ██    ██      ██    ██ ██    ██ ██ ██  ██ ██
+    ██   ██    ██    ███████  ██████   ██████  ██ ██   ████   v1.1.1 github.com/akinerkisa/HTLogin
 """
 
 _FALLBACK_CONFIG = {
@@ -32,11 +32,10 @@ _FALLBACK_CONFIG = {
 
 
 def _load_default_config() -> Dict[str, Any]:
-    """Load default configuration from config.json file."""
     current_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(current_dir)
     config_path = os.path.join(project_root, 'config.json')
-    
+
     if os.path.exists(config_path):
         try:
             with open(config_path, 'r', encoding='utf-8') as f:

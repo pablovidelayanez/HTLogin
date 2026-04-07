@@ -18,7 +18,7 @@ class ScanResult:
     baseline_login: Optional[Dict[str, Any]] = None
     username_enumeration: Optional[Dict[str, Any]] = None
     captcha_detected: Optional[bool] = None
-    
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "url": self.url,
@@ -26,7 +26,7 @@ class ScanResult:
             "tests": self.tests,
             "summary": self.summary
         }
-        
+
         if self.end_time:
             result["end_time"] = self.end_time
         if self.duration_seconds:
@@ -45,9 +45,9 @@ class ScanResult:
             result["username_enumeration"] = self.username_enumeration
         if self.captcha_detected is not None:
             result["captcha_detected"] = self.captcha_detected
-            
+
         return result
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ScanResult':
         return cls(
