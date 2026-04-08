@@ -422,99 +422,99 @@ class LoginScanner:
                         logger.info("Tip: Install Selenium and ChromeDriver, then use --use-selenium flag for better SPA support.")
 
             if not form_data:
-                    discovered_urls = self.discovery.discover(
-                        url,
-                        verify=self.config.discovery_verify_pages,
-                        verbose=self.config.verbose
+                discovered_urls = self.discovery.discover(
+                    url,
+                    verify=self.config.discovery_verify_pages,
+                    verbose=self.config.verbose
+                )
+
+                if discovered_urls:
+                    logger.info(f"Found {len(discovered_urls)} HTML login page(s)")
+                    for discovered_url in discovered_urls:
+                        logger.debug(f"Discovered login page: {discovered_url}")
+
+                    results["discovered_pages"] = discovered_urls
+                    results["note"] = "Login form not found on main page, but login pages were discovered"
+                    return results
+
+                logger.info("No HTML forms found. Attempting to discover API endpoints...")
+                json_endpoints = self.api_discovery.discover_json_endpoints(url)
+                graphql_endpoints = self.api_discovery.discover_graphql_endpoints(url)
+
+                if json_endpoints or graphql_endpoints:
+                    logger.info(
+                        f"Found {len(json_endpoints)} JSON API endpoint(s) and {len(graphql_endpoints)} "
+                        f"GraphQL endpoint(s); probing login APIs (use -v on for per-endpoint logs)"
                     )
+                    results["api_endpoints"] = {
+                        "json": json_endpoints,
+                        "graphql": graphql_endpoints
+                    }
+                    results["note"] = "No HTML forms found, but API endpoints discovered. Testing API endpoints..."
 
-                    if discovered_urls:
-                        logger.info(f"Found {len(discovered_urls)} HTML login page(s)")
-                        for discovered_url in discovered_urls:
-                            logger.debug(f"Discovered login page: {discovered_url}")
+                    provider = credential_provider or self.credential_provider
+                    credentials_list = provider.get_credentials()
+                    success_keywords = self.language_keywords.get("success", [])
+                    failure_keywords = self.language_keywords.get("failure", [])
 
-                        results["discovered_pages"] = discovered_urls
-                        results["note"] = "Login form not found on main page, but login pages were discovered"
-                        return results
-
-                    logger.info("No HTML forms found. Attempting to discover API endpoints...")
-                    json_endpoints = self.api_discovery.discover_json_endpoints(url)
-                    graphql_endpoints = self.api_discovery.discover_graphql_endpoints(url)
-
-                    if json_endpoints or graphql_endpoints:
-                        logger.info(
-                            f"Found {len(json_endpoints)} JSON API endpoint(s) and {len(graphql_endpoints)} "
-                            f"GraphQL endpoint(s); probing login APIs (use -v on for per-endpoint logs)"
+                    for endpoint in json_endpoints[:3]:
+                        success, credential, details = self.api_tester.test_json_api(
+                            endpoint, credentials_list[:5],
+                            success_keywords, failure_keywords,
+                            original_content_length,
+                            self.config.http_method,
+                            self.language_keywords,
+                            login_page_url=url,
+                            verbose=self.config.verbose,
                         )
-                        results["api_endpoints"] = {
-                            "json": json_endpoints,
-                            "graphql": graphql_endpoints
-                        }
-                        results["note"] = "No HTML forms found, but API endpoints discovered. Testing API endpoints..."
+                        if success:
+                            results["tests"]["JSON API Login"] = {
+                                "status": "Successful",
+                                "endpoint": endpoint,
+                                "credential": credential,
+                                "details": details
+                            }
+                            logger.info(f"✓ JSON API login successful at {endpoint}")
 
-                        provider = credential_provider or self.credential_provider
-                        credentials_list = provider.get_credentials()
-                        success_keywords = self.language_keywords.get("success", [])
-                        failure_keywords = self.language_keywords.get("failure", [])
+                    for endpoint in graphql_endpoints[:2]:
+                        success, credential, details = self.api_tester.test_graphql(
+                            endpoint, credentials_list[:3],
+                            success_keywords, failure_keywords,
+                            original_content_length,
+                            self.language_keywords,
+                            verbose=self.config.verbose,
+                        )
+                        if success:
+                            results["tests"]["GraphQL Login"] = {
+                                "status": "Successful",
+                                "endpoint": endpoint,
+                                "credential": credential,
+                                "details": details
+                            }
+                            logger.info(f"✓ GraphQL login successful at {endpoint}")
 
-                        for endpoint in json_endpoints[:3]:
-                            success, credential, details = self.api_tester.test_json_api(
-                                endpoint, credentials_list[:5],
-                                success_keywords, failure_keywords,
-                                original_content_length,
-                                self.config.http_method,
-                                self.language_keywords,
-                                login_page_url=url,
-                                verbose=self.config.verbose,
-                            )
-                            if success:
-                                results["tests"]["JSON API Login"] = {
-                                    "status": "Successful",
-                                    "endpoint": endpoint,
-                                    "credential": credential,
-                                    "details": details
-                                }
-                                logger.info(f"✓ JSON API login successful at {endpoint}")
+                    if not results.get("tests"):
+                        results["note"] = "API endpoints found but login tests were unsuccessful"
 
-                        for endpoint in graphql_endpoints[:2]:
-                            success, credential, details = self.api_tester.test_graphql(
-                                endpoint, credentials_list[:3],
-                                success_keywords, failure_keywords,
-                                original_content_length,
-                                self.language_keywords,
-                                verbose=self.config.verbose,
-                            )
-                            if success:
-                                results["tests"]["GraphQL Login"] = {
-                                    "status": "Successful",
-                                    "endpoint": endpoint,
-                                    "credential": credential,
-                                    "details": details
-                                }
-                                logger.info(f"✓ GraphQL login successful at {endpoint}")
+                    api_total_requests = 1
+                    api_total_requests += len(json_endpoints[:3]) * 5
+                    api_total_requests += len(graphql_endpoints[:2]) * 5
+                    api_total_requests += len(json_endpoints[:3]) * min(5, len(credentials_list))
+                    api_total_requests += len(graphql_endpoints[:2]) * min(3, len(credentials_list))
 
-                        if not results.get("tests"):
-                            results["note"] = "API endpoints found but login tests were unsuccessful"
+                    end_time = datetime.now()
+                    duration = (end_time - start_time).total_seconds()
+                    results["end_time"] = end_time.isoformat()
+                    results["duration_seconds"] = duration
+                    results["summary"] = {
+                        "total_requests": api_total_requests
+                    }
 
-                        api_total_requests = 1
-                        api_total_requests += len(json_endpoints[:3]) * 5
-                        api_total_requests += len(graphql_endpoints[:2]) * 5
-                        api_total_requests += len(json_endpoints[:3]) * min(5, len(credentials_list))
-                        api_total_requests += len(graphql_endpoints[:2]) * min(3, len(credentials_list))
-
-                        end_time = datetime.now()
-                        duration = (end_time - start_time).total_seconds()
-                        results["end_time"] = end_time.isoformat()
-                        results["duration_seconds"] = duration
-                        results["summary"] = {
-                            "total_requests": api_total_requests
-                        }
-
-                        return results
-                    else:
-                        logger.error("No login form, HTML pages, or API endpoints found.")
-                        results["error"] = "No login form, HTML pages, or API endpoints found"
-                        return results
+                    return results
+                else:
+                    logger.error("No login form, HTML pages, or API endpoints found.")
+                    results["error"] = "No login form, HTML pages, or API endpoints found"
+                    return results
 
             if not form_data.username_input or not form_data.password_input:
                 logger.warning("Form found but username/password fields not detected. Trying API endpoints...")
