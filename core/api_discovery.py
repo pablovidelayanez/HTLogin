@@ -136,7 +136,7 @@ class APIDiscovery:
             json.loads(response_text)
             if len(response_text) < 1000:
                 return 'json'
-        except:
-            pass
+        except (json.JSONDecodeError, TypeError, ValueError):
+            logger.debug("detect_api_format: response is not valid JSON for URL %s", url)
 
         return None
